@@ -76,7 +76,7 @@ class Tracker:
         username = request.get('username')
         password = request.get('password')
         if not username or username == '' or not password or password == '':
-            return {'status': 'error', 'message': 'Usuário ou senha faltando'}
+            return {'status': 'error', 'message': 'username ou password faltando'}
         
         hashed_password = self.hash_password(password)
 
@@ -89,7 +89,7 @@ class Tracker:
         username = request.get('username')
         password = request.get('password')
         if not username or username == '' or not password or password == '':
-            return {'status': 'error', 'message': 'Usuário ou senha faltando'}
+            return {'status': 'error', 'message': 'username ou password faltando'}
         
         hashed_password = self.hash_password(password)
 

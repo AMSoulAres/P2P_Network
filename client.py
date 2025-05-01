@@ -3,6 +3,7 @@ import os
 import socket
 import json
 import hashlib
+from getpass import getpass 
 
 class Peer(cmd.Cmd):
     prompt = 'peer> '
@@ -47,14 +48,19 @@ class Peer(cmd.Cmd):
 
     # O prefixo 'do_' é necessário para que o cmd reconheça os métodos como comandos
     def do_register(self, arg):
-        """Registra um novo usuário no tracker"""
+        """
+        Registra um novo usuário no tracker
+
+        Uso: register <usuário> <senha>
+             Ou apenas 'register' para solicitar usuário e senha
+        """
         if self.logged_in:
             print("Usuário já autenticado")
             return
 
         if not arg.strip():
             username = input("Username: ")
-            password = input("Password: ")
+            password = getpass("Password: ")
             if not username or not password:
                 print("Usuário ou senha não podem ser vazios")
                 return
@@ -79,14 +85,19 @@ class Peer(cmd.Cmd):
                 print(response.get('message'))
 
     def do_login(self, arg):
-        """Faz login no tracker"""
+        """
+        Faz login no tracker
+        
+        Uso: login <usuário> <senha>
+             Ou apenas 'login' para solicitar usuário e senha
+        """
         if self.logged_in:
             print("Usuário já autenticado")
             return
 
         if not arg.strip():
             username = input("Username: ")
-            password = input("Password: ")
+            password = getpass("Password: ")
             if not username or not password:
                 print("Usuário ou senha não podem ser vazios")
                 return
@@ -113,7 +124,12 @@ class Peer(cmd.Cmd):
                 print(response.get('message'))
 
     def do_announce(self, arg):
-        """Anuncia um arquivo para o tracker"""
+        """
+        Anuncia um arquivo para o tracker
+        
+        Uso: announce <caminho do arquivo>
+             Ou apenas 'announce' para solicitar o caminho do arquivo
+        """
 
         # Verificações iniciais (se o usuário está logado e se o caminho do arquivo é válido)
         if not self.logged_in:
@@ -158,6 +174,9 @@ class Peer(cmd.Cmd):
             print(f"Erro ao processar arquivo: {str(e)}")
 
     def do_exit(self, arg):
+        """
+        Encerra o cliente (sem argumentos)
+        """
         print("Saindo...")
         if self.sock:
             self.sock.close()
@@ -168,7 +187,7 @@ class Peer(cmd.Cmd):
     def compute_file_checksum(self, file_name):
         with open(file_name, "rb") as f:
             data = f.read()
-        return self.calculate_checksum(data)
+        return hashlib.sha256(data).hexdigest()
     
         # Alternativa para calcular o hash do arquivo para arquivos grandes. Implementar depois (talvez seja necessário enviar chunk a chunk e não salvar o arquivo inteiro na memória)
         # sha256 = hashlib.sha256()
