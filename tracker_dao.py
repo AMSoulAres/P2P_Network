@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta
 
 DB_NAME = "p2p_tracker.db"
 
@@ -46,7 +47,7 @@ class TrackerDao:
     def register_user(self, username, password_hash):
         try:
             self.conn.execute(
-                "INSERT INTO users VALUES (?, ?)",
+                "INSERT INTO users (username, password) VALUES (?, ?)",
                 (username, password_hash)
             )
             self.conn.commit()
@@ -60,29 +61,42 @@ class TrackerDao:
             (username,)
         )
         result = cursor.fetchone()
-        user_auth = result and result[0] == password_hash
+        return result and result[0] == password_hash
 
-        if user_auth:
-            # Atualiza o timestamp do último login
-            self.conn.execute(
-                "UPDATE users SET active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
-                (username,)
-            )
-            self.conn.commit()
-        return user_auth
-
-    def verify_active_peer(self, username):
+    def verify_active_peer(self, username) -> tuple[bool, str]:
         cursor = self.conn.execute(
-            "SELECT active_peer FROM users WHERE username = ?",
+            "SELECT active_peer, last_seen FROM users WHERE username = ?",
             (username,)
         )
         result = cursor.fetchone()
-        return result and result[0] == 1 
+
+        # TODO: Mover lógica para fora do DAO (nada a ver)
+        if result:
+            peer_status = result[0]
+            peer_last_seen = result[1]
+
+            # Verifica se o peer está ativo (active_peer = 1)
+            if peer_status == 1:
+                peer_last_seen = datetime.strptime(peer_last_seen, "%Y-%m-%d %H:%M:%S")
+                #TODO: ARRUMAR ESSA MERDA, PROVAVEL DIFERENÇA ENTRE DATETIME E TIMESTAMP
+                # Verifica timestamp do último login. Se o timestamp for maior que 5 min, desativa o peer
+                if peer_last_seen < (datetime.now() - timedelta(minutes=1)):
+                    self.remove_active_peer(username)
+                    return False, "Login expirado"
+                else:
+                    return True, "Peer autenticado"
+            else:
+                # Verifica se o peer está ativo (active_peer = 0)
+                return False, "Peer não autenticado"
+        else:
+            return False, "Usuário não encontrado"
+        
 
     def add_active_peer(self, username):
         # Timestamp atual do banco de dados (atualizar quando implementar heartbeat)
+        # Atualiza o timestamp do último login
         self.conn.execute(
-            "INSERT OR REPLACE INTO active_peers (username) VALUES (?)",
+            "UPDATE users SET active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
             (username,)
         )
         self.conn.commit()
@@ -110,6 +124,9 @@ class TrackerDao:
                 (username, file_hash)
             )
             self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            print(f"Arquivo já registrado")
             return True
         except sqlite3.Error as e:
             print(f"Database error: {e}")

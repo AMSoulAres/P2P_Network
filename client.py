@@ -34,12 +34,12 @@ class Peer(cmd.Cmd):
             self.sock.sendall(message.encode())
             response = ''
             while True:
-                data = self.sock.recv(1024 * 1024).decode()
+                data = self.sock.recv(1024).decode()
                 if not data:
                     break
                 response += data
                 if '\n' in response:
-                    response = response.split('\n', 1)
+                    response, _ = response.split('\n', 1)  # Add _ (item vazio) para separar a resposta e mandar no JSON
                     break
             return json.loads(response)
         except Exception as e:
@@ -132,9 +132,9 @@ class Peer(cmd.Cmd):
         """
 
         # Verificações iniciais (se o usuário está logado e se o caminho do arquivo é válido)
-        if not self.logged_in:
-            print("Autentique-se primeiro")
-            return
+        # if not self.logged_in:
+        #     print("Autentique-se primeiro")
+        #     return
 
         if not arg.strip():
             path = input("Caminho para o arquivo (path): ")
@@ -156,7 +156,7 @@ class Peer(cmd.Cmd):
                 print("Arquivo não encontrado")
                 return
             name = os.path.basename(path)
-            size = os.path.getsize(path)
+            size = os.path.getsize(path) # Tamanho do arquivo em bytes
             file_hash = self.compute_file_checksum(path)
 
             request = {

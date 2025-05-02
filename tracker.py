@@ -36,10 +36,11 @@ class Tracker:
 
 
     def handle_client(self, client_socket):
+        """Lida com a comunicação com o cliente"""
         username = None
         try:
             buffer = ''
-            while True:
+            while True: # Mantém o loop até que o cliente desconecte
                 data = client_socket.recv(1024 *1024).decode()
                 if not data:
                     break
@@ -48,16 +49,15 @@ class Tracker:
                     message, buffer = buffer.split('\n', 1)
                     request = json.loads(message)
                     response = self.process_request(request, username)
-                    if response.get('status') == 'login_success':
-                        username = request['username']
-                        self.active_peers.add(username)
-                    client_socket.send(json.dumps(response).encode() + b'\n')
+                    if response.get('status') == 'success' and request.get('method') == 'login': # Workaround pra salvar o usuario da sessão e "manter login" (melhor forma seria implementar um sistema de sessão com token)
+                        username = request.get('username')
+                    client_socket.send(json.dumps(response).encode() + b'\n') # Envia a resposta para o cliente
         except Exception as e:
             print(f"Erro ao lidar com cliente: {e}")
         finally:
             client_socket.close()
             if username:
-                self.remove_peer(username)
+                self.remove_peer(username) # Remove o peer do banco de dados quando desconecta
 
     def process_request(self, request, current_username):
         method = request.get('method')
@@ -66,8 +66,6 @@ class Tracker:
         elif method == 'login':
             return self.handle_login(request)
         elif method == 'announce':
-            if not current_username:
-                return {'status': 'error', 'message': 'Não autenticado'}
             return self.handle_announce(request, current_username)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
@@ -104,7 +102,11 @@ class Tracker:
         self.db.remove_active_peer(username)
 
     def handle_announce(self, request, username):
-        if self.db.verify_active_peer(username):
+        """Anuncia um arquivo para o tracker"""
+
+        # Verifica se o usuario fazendo a requisição está logado e ativo (o peer é ativado no login e o usuário salvo na sessão do socket)
+        is_peer_active, message = self.db.verify_active_peer(username)
+        if is_peer_active:
             file_name = request.get('name')
             file_size = request.get('size')
             file_hash = request.get('hash')
@@ -117,7 +119,7 @@ class Tracker:
             else:
                 return {'status': 'error', 'message': 'Erro ao registrar arquivo'}
         else:
-            return {'status': 'error', 'message': 'Peer não autenticado'}
+            return {'status': 'error', 'message': message}
         
     def get_active_peers(self):
         # TODO: Implementar lógica para retornar peers ativos
