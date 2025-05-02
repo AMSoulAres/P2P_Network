@@ -65,7 +65,7 @@ class TrackerDao:
 
     def verify_active_peer(self, username) -> tuple[bool, str]:
         cursor = self.conn.execute(
-            "SELECT active_peer, last_seen FROM users WHERE username = ?",
+            "SELECT active_peer, DATETIME(last_seen, '-03:00') FROM users WHERE username = ?",
             (username,)
         )
         result = cursor.fetchone()
@@ -78,7 +78,6 @@ class TrackerDao:
             # Verifica se o peer está ativo (active_peer = 1)
             if peer_status == 1:
                 peer_last_seen = datetime.strptime(peer_last_seen, "%Y-%m-%d %H:%M:%S")
-                #TODO: ARRUMAR ESSA MERDA, PROVAVEL DIFERENÇA ENTRE DATETIME E TIMESTAMP
                 # Verifica timestamp do último login. Se o timestamp for maior que 5 min, desativa o peer
                 if peer_last_seen < (datetime.now() - timedelta(minutes=1)):
                     self.remove_active_peer(username)
@@ -126,7 +125,7 @@ class TrackerDao:
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
-            print(f"Arquivo já registrado")
+            print(f"Arquivo {name} já registrado")
             return True
         except sqlite3.Error as e:
             print(f"Database error: {e}")

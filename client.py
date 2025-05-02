@@ -91,9 +91,6 @@ class Peer(cmd.Cmd):
         Uso: login <usuário> <senha>
              Ou apenas 'login' para solicitar usuário e senha
         """
-        if self.logged_in:
-            print("Usuário já autenticado")
-            return
 
         if not arg.strip():
             username = input("Username: ")
@@ -132,9 +129,6 @@ class Peer(cmd.Cmd):
         """
 
         # Verificações iniciais (se o usuário está logado e se o caminho do arquivo é válido)
-        # if not self.logged_in:
-        #     print("Autentique-se primeiro")
-        #     return
 
         if not arg.strip():
             path = input("Caminho para o arquivo (path): ")
