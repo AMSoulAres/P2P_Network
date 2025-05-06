@@ -68,27 +68,8 @@ class TrackerDao:
             "SELECT active_peer, DATETIME(last_seen, '-03:00') FROM users WHERE username = ?",
             (username,)
         )
-        result = cursor.fetchone()
 
-        # TODO: Mover lógica para fora do DAO (nada a ver)
-        if result:
-            peer_status = result[0]
-            peer_last_seen = result[1]
-
-            # Verifica se o peer está ativo (active_peer = 1)
-            if peer_status == 1:
-                peer_last_seen = datetime.strptime(peer_last_seen, "%Y-%m-%d %H:%M:%S")
-                # Verifica timestamp do último login. Se o timestamp for maior que 5 min, desativa o peer
-                if peer_last_seen < (datetime.now() - timedelta(minutes=1)):
-                    self.remove_active_peer(username)
-                    return False, "Login expirado"
-                else:
-                    return True, "Peer autenticado"
-            else:
-                # Verifica se o peer está ativo (active_peer = 0)
-                return False, "Peer não autenticado"
-        else:
-            return False, "Usuário não encontrado"
+        return cursor.fetchone()
         
 
     def add_active_peer(self, username):

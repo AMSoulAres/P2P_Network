@@ -3,7 +3,8 @@ import threading
 import json
 import hashlib
 from tracker_dao import TrackerDao
-
+from datetime import datetime, timedelta
+TEMPO_LOGIN = 1 # Tempo de login em minutos
 
 class Tracker:
     def __init__(self, host, port):
@@ -53,7 +54,7 @@ class Tracker:
                         username = request.get('username')
                     client_socket.send(json.dumps(response).encode() + b'\n') # Envia a resposta para o cliente
         except Exception as e:
-            print(f"Erro ao lidar com cliente: {e}")
+            print(f"Erro na comunicação com o cliente: {e}")
         finally:
             client_socket.close()
             if username:
@@ -105,7 +106,9 @@ class Tracker:
         """Anuncia um arquivo para o tracker"""
 
         # Verifica se o usuario fazendo a requisição está logado e ativo (o peer é ativado no login e o usuário salvo na sessão do socket)
-        is_peer_active, message = self.db.verify_active_peer(username)
+        dao_result = self.db.verify_active_peer(username)
+        is_peer_active, message = self.verify_active_peer(username, dao_result)
+
         if is_peer_active:
             file_name = request.get('name')
             file_size = request.get('size')
@@ -120,6 +123,26 @@ class Tracker:
                 return {'status': 'error', 'message': 'Erro ao registrar arquivo'}
         else:
             return {'status': 'error', 'message': message}
+        
+    def verify_active_peer(self, username, result):
+        if result:
+            peer_status = result[0]
+            peer_last_seen = result[1]
+
+            # Verifica se o peer está ativo (active_peer = 1)
+            if peer_status == 1:
+                peer_last_seen = datetime.strptime(peer_last_seen, "%Y-%m-%d %H:%M:%S")
+                # Verifica timestamp do último login. Se o timestamp for maior que 5 min, desativa o peer
+                if peer_last_seen < (datetime.now() - timedelta(minutes=TEMPO_LOGIN)):
+                    self.remove_peer(username)
+                    return False, "Login expirado"
+                else:
+                    return True, "Peer autenticado"
+            else:
+                # Verifica se o peer está ativo (active_peer = 0)
+                return False, "Peer não autenticado"
+        else:
+            return False, "Usuário não encontrado"
         
     def get_active_peers(self):
         # TODO: Implementar lógica para retornar peers ativos
