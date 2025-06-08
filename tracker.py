@@ -68,6 +68,10 @@ class Tracker:
             return self.handle_login(request)
         elif method == 'announce':
             return self.handle_announce(request, current_username)
+        elif method == 'get_peers': 
+            return self.handle_get_active_peers_w_file(request)
+        elif method == 'get_file_metadata':
+            return self.handle_get_file_metadata(request)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -143,10 +147,23 @@ class Tracker:
                 return False, "Peer não autenticado"
         else:
             return False, "Usuário não encontrado"
+
+    def handle_active_peers_w_file(self, request):
+        file_hash = request.get('file_hash')
+        if not file_hash:
+            return {'status': 'error', 'message': 'Hash do arquivo faltando'}
         
-    def get_active_peers(self):
-        # TODO: Implementar lógica para retornar peers ativos
-        return None
+        try:
+            # Obter peers ativos com o arquivo
+            cursor = self.db.conn.execute(
+                "SELECT ip, port FROM peer_info WHERE username IN "
+                "(SELECT username FROM peer_files WHERE file_hash = ?)",
+                (file_hash,)
+            )
+            peers = cursor.fetchall()
+            return {'status': 'success', 'peers': peers}
+        except sqlite3.Error as e:
+            return {'status': 'error', 'message': f"Database error: {str(e)}"}
     
     def get_peer_addr(self, username):
         # TODO: Implementar lógica para retornar endereços de peers
