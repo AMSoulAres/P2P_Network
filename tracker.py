@@ -4,7 +4,7 @@ import json
 import hashlib
 from tracker_dao import TrackerDao
 from datetime import datetime, timedelta
-TEMPO_LOGIN = 1 # Tempo de login em minutos
+TEMPO_LOGIN = 5 # Tempo de login em minutos
 
 class Tracker:
     def __init__(self, host, port):
@@ -83,7 +83,7 @@ class Tracker:
         
         hashed_password = self.hash_password(password)
 
-        if self.db.register_user(username, hashed_password):
+        if self.db.register_user(username, hashed_password, ip, port):
             return {'status': 'success', 'message': 'Registro bem-sucedido'}
         else:
             return {'status': 'error', 'message': 'Usuário já existe'}
@@ -91,6 +91,9 @@ class Tracker:
     def handle_login(self, request):
         username = request.get('username')
         password = request.get('password')
+        ip = request.get('ip')
+        port = request.get('port')
+
         if not username or username == '' or not password or password == '':
             return {'status': 'error', 'message': 'username ou password faltando'}
         
@@ -99,7 +102,7 @@ class Tracker:
         if not self.db.verify_user(username, hashed_password):
             return {'status': 'error', 'message': 'Credenciais inválidas'}
         
-        self.db.add_active_peer(username)
+        self.db.add_active_peer(username, ip, port)
         return {'status': 'success', 'message': 'Login bem-sucedido'}
     
     def remove_peer(self, username):
@@ -110,28 +113,29 @@ class Tracker:
         """Anuncia um arquivo para o tracker"""
 
         # Verifica se o usuario fazendo a requisição está logado e ativo (o peer é ativado no login e o usuário salvo na sessão do socket)
-        dao_result = self.db.verify_active_peer(username)
-        is_peer_active, message = self.verify_active_peer(username, dao_result)
+        is_peer_active, message = self.verify_active_peer(username)
 
         if is_peer_active:
             file_name = request.get('name')
             file_size = request.get('size')
             file_hash = request.get('hash')
+            file_chunks = request.get('chunks')
             
             if not file_name or not file_size or not file_hash:
                 return {'status': 'error', 'message': 'Detalhes do arquivo faltando'}
             
-            if self.db.register_file(username, file_name, file_size, file_hash):
+            if self.db.register_file(username, file_name, file_size, file_hash, json.dumps(file_chunks)):
                 return {'status': 'success', 'message': 'Arquivo anunciado com sucesso'}
             else:
                 return {'status': 'error', 'message': 'Erro ao registrar arquivo'}
         else:
             return {'status': 'error', 'message': message}
         
-    def verify_active_peer(self, username, result):
-        if result:
-            peer_status = result[0]
-            peer_last_seen = result[1]
+    def verify_active_peer(self, username):
+        dao_result = self.db.verify_active_peer(username)
+        if dao_result:
+            peer_status = dao_result[0]
+            peer_last_seen = dao_result[1]
 
             # Verifica se o peer está ativo (active_peer = 1)
             if peer_status == 1:
@@ -148,30 +152,32 @@ class Tracker:
         else:
             return False, "Usuário não encontrado"
 
-    def handle_active_peers_w_file(self, request):
+    def handle_get_active_peers_w_file(self, request):
+        file_hash = request.get('file_hash')
+        if not file_hash:
+            return {'status': 'error', 'message': 'Hash do arquivo faltando'}
+
+        # Obter peers ativos com o arquivo
+        peers = self.db.get_active_peers_with_file(file_hash)
+        if not peers:
+            return {'status': 'error', 'message': 'Nenhum peer ativo com o arquivo encontrado'}
+        return {'status': 'success', 'peers': peers}
+    
+    def handle_get_file_metadata(self, request):
         file_hash = request.get('file_hash')
         if not file_hash:
             return {'status': 'error', 'message': 'Hash do arquivo faltando'}
         
-        try:
-            # Obter peers ativos com o arquivo
-            cursor = self.db.conn.execute(
-                "SELECT ip, port FROM peer_info WHERE username IN "
-                "(SELECT username FROM peer_files WHERE file_hash = ?)",
-                (file_hash,)
-            )
-            peers = cursor.fetchall()
-            return {'status': 'success', 'peers': peers}
-        except sqlite3.Error as e:
-            return {'status': 'error', 'message': f"Database error: {str(e)}"}
-    
-    def get_peer_addr(self, username):
-        # TODO: Implementar lógica para retornar endereços de peers
-        return None
-    
-    def get_file_info(self, file_hash):
-        # TODO: Implementar lógica para retornar informações de arquivos e/ou usuários com arquivo
-        return None
+        result = self.db.get_file_metadata(file_hash)
+        if not result:
+            return {'status': 'error', 'message': 'Arquivo não encontrado'}
+        
+        metadata = {
+            'name': result[0],
+            'size': result[1],
+            'chunk_hashes': json.loads(result[2]) if result[2] else []
+        }
+        return {'status': 'success', 'metadata': metadata}
 
 if __name__ == '__main__':
     tracker = Tracker('localhost', 5000)

@@ -25,7 +25,8 @@ class Peer(cmd.Cmd):
         os.makedirs(self.download_dir, exist_ok=True)
         
         # Iniciar servidor para receber solicitações de chunks
-        self.chunk_port = 6000  # Porta para transferência P2P
+        #self.peer_port = 6000  # Porta para transferência P2P
+        self.peer_port = random.randint(50000, 60000) # Porta aleatória para evitar conflitos em localhost
         threading.Thread(target=self.start_chunk_server, daemon=True).start()
 
         self.connect_to_tracker()
@@ -37,6 +38,18 @@ class Peer(cmd.Cmd):
         except Exception as e:
             print(f"Falha ao conectar ao tracker: {e}")
             self.sock = None
+
+    def start_chunk_server(self):
+        hostname = socket.gethostname()
+        ip = socket.gethostbyname(hostname)
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((socket.gethostbyname(socket.gethostname()), self.peer_port))
+        server_socket.listen(5)
+        print(f"Servidor de chunks ouvindo na porta {self.peer_port}")
+        
+        while True:
+            client_socket, addr = server_socket.accept()
+            threading.Thread(target=self.handle_chunk_request, args=(client_socket,)).start()
 
     def send_request(self, request):
         """Envia uma requisição para o tracker e retorna a resposta"""
@@ -88,7 +101,9 @@ class Peer(cmd.Cmd):
         request = {
             'method': 'register',
             'username': username,
-            'password': password
+            'password': password,
+            'ip': socket.gethostbyname(socket.gethostname()),
+            'port': self.peer_port
         }
 
         response = self.send_request(request)
@@ -122,7 +137,9 @@ class Peer(cmd.Cmd):
         request = {
             'method': 'login',
             'username': username,
-            'password': password
+            'password': password,
+            'ip': socket.gethostbyname(socket.gethostname()),
+            'port': self.peer_port 
         }
 
         response = self.send_request(request)
@@ -265,7 +282,7 @@ class Peer(cmd.Cmd):
                     self.download_chunk,
                     file_hash,
                     chunk_index,
-                    chunk_hash,
+                    metadata['chunk_hashes'][chunk_index],
                     peer,
                     temp_dir
                 ))
@@ -290,7 +307,7 @@ class Peer(cmd.Cmd):
         if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path):
             download_time = time.time() - start_time
             file_size = os.path.getsize(download_path)
-            print(f"Download concluído! {file_size/1048576:.2f} MB em {download_time:.1f} segundos")
+            print(f"Download concluído! {file_size/1024*1024:.2f} MB em {download_time:.1f} segundos")
             print(f"Arquivo salvo em: {download_path}")
         else:
             print("Falha ao montar arquivo final")
@@ -300,7 +317,7 @@ class Peer(cmd.Cmd):
 
     # Utils
 
-    def compute_file_checksum(self, file_name, chunk_size=1048576):  # Chunk de 1MB
+    def compute_file_checksum(self, file_name, chunk_size=1024*1024):  # Chunk de 1MB
         sha256 = hashlib.sha256()
         chunk_hashes = []
         
@@ -315,7 +332,7 @@ class Peer(cmd.Cmd):
         
         return sha256.hexdigest(), chunk_hashes
     
-    def download_chunk(self, file_hash, chunk_index, peer, temp_dir):
+    def download_chunk(self, file_hash, chunk_index, expected_hash, peer, temp_dir):
         peer_ip, peer_port = peer
         chunk_file = os.path.join(temp_dir, f"{chunk_index}.chunk")
         
@@ -341,6 +358,10 @@ class Peer(cmd.Cmd):
                 
                 # Verificar integridade
                 chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+                if chunk_hash != expected_hash:
+                    print(f"Chunk {chunk_index} corrompido: esperado {expected_hash}, recebido {chunk_hash}")
+                    return False
+
                 with open(chunk_file, 'wb') as f:
                     f.write(chunk_data)
                 

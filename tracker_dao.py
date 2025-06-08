@@ -15,6 +15,8 @@ class TrackerDao:
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                port INTEGER NOT NULL,
                 active_peer INTEGER DEFAULT 0,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -28,6 +30,7 @@ class TrackerDao:
                 file_hash TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 size INTEGER NOT NULL
+                chunk_hashes TEXT -- JSON com hashes de chunks
             )
         ''')
         
@@ -44,11 +47,11 @@ class TrackerDao:
 
         self.conn.commit()
 
-    def register_user(self, username, password_hash):
+    def register_user(self, username, password_hash, ip, port):
         try:
             self.conn.execute(
-                "INSERT INTO users (username, password) VALUES (?, ?)",
-                (username, password_hash)
+                "INSERT INTO users (username, password, ip, port) VALUES (?, ?, ?, ?)",
+                (username, password_hash, ip, port)
             )
             self.conn.commit()
             return True
@@ -70,14 +73,14 @@ class TrackerDao:
         )
 
         return cursor.fetchone()
-        
 
-    def add_active_peer(self, username):
+    def add_active_peer(self, username, ip, port):
         # Timestamp atual do banco de dados (atualizar quando implementar heartbeat)
         # Atualiza o timestamp do último login
+        # Atualiza o IP e a porta do peer ativo
         self.conn.execute(
-            "UPDATE users SET active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
-            (username,)
+            "UPDATE users SET ip = ?, port = ?, active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
+            (ip, port, username,)
         )
         self.conn.commit()
 
@@ -91,12 +94,12 @@ class TrackerDao:
         except sqlite3.Error as e:
             print(f"Database error: {e}")
 
-    def register_file(self, username, name, size, file_hash):
+    def register_file(self, username, name, size, file_hash, chunk_hashes):
         try:
             # Registrar arquivo se não existir
             self.conn.execute(
-                "INSERT OR IGNORE INTO files VALUES (?, ?, ?)",
-                (file_hash, name, size)
+                "INSERT OR IGNORE INTO files VALUES (?, ?, ?, ?)",
+                (file_hash, name, size, chunk_hashes)
             )
             # Associar peer ao arquivo
             self.conn.execute(
@@ -129,3 +132,20 @@ class TrackerDao:
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             return False
+        
+    def get_active_peers_with_file(self, file_hash):
+        cursor = self.db.conn.execute(
+                "SELECT ip, port FROM peer_info WHERE username IN "
+                "(SELECT username FROM peer_files WHERE file_hash = ?)",
+                (file_hash,)
+            )
+        return cursor.fetchall()
+    
+    def get_file_metadata(self, file_hash):
+        # Obter metadados do arquivo
+        cursor = self.db.conn.execute(
+            "SELECT name, size, chunk_hashes FROM files WHERE file_hash = ?",
+            (file_hash,)
+        )
+        return cursor.fetchone()
+        
