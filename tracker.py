@@ -4,7 +4,7 @@ import json
 import hashlib
 from tracker_dao import TrackerDao
 from datetime import datetime, timedelta
-TEMPO_LOGIN = 5 # Tempo de login em minutos
+TEMPO_LOGIN = 15 # Tempo de login em minutos
 
 class Tracker:
     def __init__(self, host, port):
@@ -78,6 +78,9 @@ class Tracker:
     def handle_register(self, request):
         username = request.get('username')
         password = request.get('password')
+        ip = request.get('ip')
+        port = request.get('port')
+
         if not username or username == '' or not password or password == '':
             return {'status': 'error', 'message': 'username ou password faltando'}
         
@@ -159,6 +162,7 @@ class Tracker:
 
         # Obter peers ativos com o arquivo
         peers = self.db.get_active_peers_with_file(file_hash)
+        print(f"Peers ativos com o arquivo {file_hash}: {peers}")
         if not peers:
             return {'status': 'error', 'message': 'Nenhum peer ativo com o arquivo encontrado'}
         return {'status': 'success', 'peers': peers}

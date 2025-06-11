@@ -9,6 +9,9 @@ import hashlib
 from getpass import getpass
 import threading
 import time
+import traceback
+
+CHUNK_SIZE = 1024  # 1MB, tamanho do chunk para download
 
 class Peer(cmd.Cmd):
     prompt = 'peer> '
@@ -41,9 +44,10 @@ class Peer(cmd.Cmd):
 
     def start_chunk_server(self):
         hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
+        # ip = socket.gethostbyname(hostname)
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((socket.gethostbyname(socket.gethostname()), self.peer_port))
+        # server_socket.bind((socket.gethostbyname(socket.gethostname()), self.peer_port))
+        server_socket.bind(('0.0.0.0', self.peer_port))
         server_socket.listen(5)
         print(f"Servidor de chunks ouvindo na porta {self.peer_port}")
         
@@ -61,7 +65,7 @@ class Peer(cmd.Cmd):
             self.sock.sendall(message.encode())
             response = ''
             while True:
-                data = self.sock.recv(1024).decode()
+                data = self.sock.recv(CHUNK_SIZE).decode()
                 if not data:
                     break
                 response += data
@@ -98,11 +102,15 @@ class Peer(cmd.Cmd):
                 return
             username, password = args
 
+        print(socket.gethostbyname(socket.gethostname()))
+        print(self.peer_port)
+
         request = {
             'method': 'register',
             'username': username,
             'password': password,
-            'ip': socket.gethostbyname(socket.gethostname()),
+            # 'ip': socket.gethostbyname(socket.gethostname()),
+            'ip': '0.0.0.0',
             'port': self.peer_port
         }
 
@@ -138,7 +146,8 @@ class Peer(cmd.Cmd):
             'method': 'login',
             'username': username,
             'password': password,
-            'ip': socket.gethostbyname(socket.gethostname()),
+            # 'ip': socket.gethostbyname(socket.gethostname()),
+            'ip': '0.0.0.0',
             'port': self.peer_port 
         }
 
@@ -172,6 +181,10 @@ class Peer(cmd.Cmd):
                 print("Uso: announce <caminho do arquivo>")
                 return
             path = args[0]
+        
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
 
         # Verifica se o arquivo existe e lê os dados
         # Se o arquivo não existir, retorna uma mensagem de erro
@@ -194,6 +207,7 @@ class Peer(cmd.Cmd):
                     'size': size,
                     'name': name
                 }
+            print(f"Anunciando arquivo: {name} ({size} bytes, hash: {file_hash}, chunks: {len(chunk_hashes)})")
             
             # Enviar anúncio para tracker
             request = {
@@ -201,7 +215,7 @@ class Peer(cmd.Cmd):
                 'name': name,
                 'size': size,
                 'hash': file_hash,
-                'chunk_hashes': chunk_hashes  # Adicionar hashes dos chunks (necessário, pois quem faz o download precisa saber quais chunks existem para baixar)
+                'chunks': chunk_hashes  # Adicionar hashes dos chunks (necessário, pois quem faz o download precisa saber quais chunks existem para baixar)
             }
             response = self.send_request(request)
             if response:
@@ -247,7 +261,9 @@ class Peer(cmd.Cmd):
         if not peers:
             print("Nenhum peer disponível com este arquivo")
             return
-            
+        
+        print(f"Encontrados {len(peers)} peers com o arquivo.")
+
         # Obter metadados do arquivo
         request = {'method': 'get_file_metadata', 'file_hash': file_hash}
         response = self.send_request(request)
@@ -255,11 +271,11 @@ class Peer(cmd.Cmd):
         if not response or response.get('status') != 'success':
             print("Erro ao obter metadados:", response.get('message', 'Erro desconhecido'))
             return
-            
+        
         metadata = response.get('metadata', {})
         num_chunks = len(metadata.get('chunk_hashes', []))
         file_name = metadata.get('name', file_hash)
-        
+
         if num_chunks == 0:
             print("Arquivo sem chunks disponíveis, impossível fazer download")
             return
@@ -272,11 +288,15 @@ class Peer(cmd.Cmd):
         # Baixar chunks em paralelo
         print(f"Iniciando download de {file_name} ({num_chunks} chunks)")
         start_time = time.time()
-        
+
+        # Imprime a barra de progresso inicial (0%)
+        progress = 0
+        bar = '[' + '-' * 40 + ']'
+        print(f'\rBaixando: {bar} 0/{num_chunks} chunks', end='', flush=True)
+
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = []
             for chunk_index in range(num_chunks):
-                # Escolher peer aleatório para cada chunk
                 peer = random.choice(peers)
                 futures.append(executor.submit(
                     self.download_chunk,
@@ -293,21 +313,14 @@ class Peer(cmd.Cmd):
             for future in as_completed(futures):
                 try:
                     result = future.result()
-                    downloaded_chunks += 1 if result else 0
-                    if not result:
-                        print("Erro ao baixar chunk - ERROR")
-
-                    progress = int(40 * num_downloaded_chunks / num_chunks)
-                    bar = '[' + '#' * progress + '-' * (40 - progress) + ']'
-                    print(f'\rBaixando: {bar} {num_downloaded_chunks}/{num_chunks} chunks', end='', flush=True)
                 except Exception as e:
                     print(f"Erro no download: {str(e)}")
-        
+
         # Montar arquivo final
         if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path):
             download_time = time.time() - start_time
             file_size = os.path.getsize(download_path)
-            print(f"Download concluído! {file_size/1024*1024:.2f} MB em {download_time:.1f} segundos")
+            print(f"Download concluído! {file_size/CHUNK_SIZE:.2f} KB em {download_time:.1f} segundos") #TODO: trocar para 1 MB (1024*1024)
             print(f"Arquivo salvo em: {download_path}")
         else:
             print("Falha ao montar arquivo final")
@@ -317,7 +330,7 @@ class Peer(cmd.Cmd):
 
     # Utils
 
-    def compute_file_checksum(self, file_name, chunk_size=1024*1024):  # Chunk de 1MB
+    def compute_file_checksum(self, file_name, chunk_size=CHUNK_SIZE):  #TODO: trocar para 1mb# Chunk de 1MB
         sha256 = hashlib.sha256()
         chunk_hashes = []
         
@@ -335,9 +348,12 @@ class Peer(cmd.Cmd):
     def download_chunk(self, file_hash, chunk_index, expected_hash, peer, temp_dir):
         peer_ip, peer_port = peer
         chunk_file = os.path.join(temp_dir, f"{chunk_index}.chunk")
+
+        print("Baixando chunk", chunk_index, "de", peer_ip, ":", peer_port)
         
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(10)  # Timeout de 10 segundos
                 s.connect((peer_ip, peer_port))
                 
                 # Solicitar chunk específico
@@ -346,28 +362,31 @@ class Peer(cmd.Cmd):
                     'file_hash': file_hash,
                     'chunk_index': chunk_index
                 }
-                s.send(json.dumps(request).encode() + b'\n')
+                s.sendall(json.dumps(request).encode() + b'\n')
                 
                 # Receber chunk
                 chunk_data = b''
-                while True:
-                    data = s.recv(4096)
+                remaining = CHUNK_SIZE # Esperamos 1MB
+            
+                while remaining > 0:
+                    data = s.recv(min(4096, remaining))
                     if not data:
                         break
                     chunk_data += data
-                
-                # Verificar integridade
-                chunk_hash = hashlib.sha256(chunk_data).hexdigest()
-                if chunk_hash != expected_hash:
-                    print(f"Chunk {chunk_index} corrompido: esperado {expected_hash}, recebido {chunk_hash}")
-                    return False
+                    remaining -= len(data)
+                    
+                    # Verificar integridade
+                    chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+                    if chunk_hash != expected_hash:
+                        print(f"Chunk {chunk_index} corrompido: esperado {expected_hash}, recebido {chunk_hash}")
+                        return False
 
-                with open(chunk_file, 'wb') as f:
-                    f.write(chunk_data)
-                
-                return True
+                    with open(chunk_file, 'wb') as f:
+                        f.write(chunk_data)
+            print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}")
         except Exception as e:
             print(f"Erro ao baixar chunk {chunk_index} de {peer_ip}: {str(e)}")
+            traceback.print_exc()
             return False
     
     def assemble_file(self, file_hash, chunk_hashes, temp_dir, output_path):
@@ -403,21 +422,24 @@ class Peer(cmd.Cmd):
             return False
         
     def handle_chunk_request(self, client_socket):
+        """Lida com solicitações de chunks de outros peers"""
+        print("Novo cliente conectado para chunks")
         try:
-            buffer = ''
-            while True:
-                data = client_socket.recv(4096).decode()
-                if not data:
-                    break
-                buffer += data
-                if '\n' in buffer:
-                    message, buffer = buffer.split('\n', 1)
-                    request = json.loads(message)
-                    self.process_chunk_request(client_socket, request)
+            # Ler toda a solicitação de uma vez
+            data = client_socket.recv(4096).decode()
+            if not data:
+                return
+                
+            # Processar apenas a primeira mensagem completa
+            if '\n' in data:
+                message, _ = data.split('\n', 1)
+                request = json.loads(message)
+                print(f"Recebido pedido de chunk: {request}")
+                self.process_chunk_request(client_socket, request)
         except Exception as e:
             print(f"Erro no servidor de chunks: {str(e)}")
         finally:
-            client_socket.close()
+            client_socket.close()  # Fechar conexão após enviar o chunk
 
     def process_chunk_request(self, client_socket, request):
         action = request.get('action')
@@ -432,13 +454,23 @@ class Peer(cmd.Cmd):
                 return
             
             file_path = self.shared_files[file_hash]['path']
-            chunk_size = 1024 * 1024  # 1MB
+            chunk_size = CHUNK_SIZE  #TODO:trocar para # 1MB
             
             try:
                 with open(file_path, 'rb') as f:
+                    print("Lendo")
                     f.seek(chunk_index * chunk_size)
                     chunk_data = f.read(chunk_size)
-                    client_socket.sendall(chunk_data)
+
+                    total_sent = 0
+                    print("Enviando")
+                    while total_sent < len(chunk_data):
+                        sent = client_socket.send(chunk_data[total_sent:total_sent + 4096])
+                        if sent == 0:
+                            raise RuntimeError("Conexão fechada durante envio do chunk")
+                        total_sent += sent
+
+                    print(f"Chunk {chunk_index} ({len(chunk_data)} bytes) enviado com sucesso")
             except Exception as e:
                 print(f"Erro ao ler chunk: {str(e)}")
 

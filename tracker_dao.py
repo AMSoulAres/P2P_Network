@@ -25,15 +25,17 @@ class TrackerDao:
         # TODO: Implementar tabela de peers ativos (realmente necessário?)
         
         # Tabela de arquivos
+        # chunk_hashes possui um JSON com hashes de chunks
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS files (
                 file_hash TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                size INTEGER NOT NULL
-                chunk_hashes TEXT -- JSON com hashes de chunks
+                size INTEGER NOT NULL,
+                chunk_hashes TEXT NOT NULL
             )
         ''')
-        
+
+
         # Tabela de associação peer-arquivo
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS peer_files (
@@ -134,8 +136,8 @@ class TrackerDao:
             return False
         
     def get_active_peers_with_file(self, file_hash):
-        cursor = self.db.conn.execute(
-                "SELECT ip, port FROM peer_info WHERE username IN "
+        cursor = self.conn.execute(
+                "SELECT ip, port FROM users WHERE active_peer = 1 AND username IN "
                 "(SELECT username FROM peer_files WHERE file_hash = ?)",
                 (file_hash,)
             )
@@ -143,9 +145,8 @@ class TrackerDao:
     
     def get_file_metadata(self, file_hash):
         # Obter metadados do arquivo
-        cursor = self.db.conn.execute(
+        cursor = self.conn.execute(
             "SELECT name, size, chunk_hashes FROM files WHERE file_hash = ?",
             (file_hash,)
         )
         return cursor.fetchone()
-        
