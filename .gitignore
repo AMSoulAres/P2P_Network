@@ -1,2 +1,10 @@
 __pycache__
 .mypy_cache
+/downloads
+downloads/
+downloads
+*.mp4
+*.pdf
+*.txt
+*.chunk
+*.rar

@@ -116,6 +116,20 @@ class TrackerDao:
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             return False
+        
+    def register_partial_file(self, username, file_hash):
+        try:
+            # Apenas associa o peer ao arquivo (sem criar arquivo novo)
+            self.conn.execute(
+                "INSERT OR IGNORE INTO peer_files (username, file_hash) VALUES (?, ?)",
+                (username, file_hash)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Erro no registro parcial: {e}")
+            return False
+
 
     def remove_peer_files(self, username):
         try:
@@ -137,7 +151,7 @@ class TrackerDao:
         
     def get_active_peers_with_file(self, file_hash):
         cursor = self.conn.execute(
-                "SELECT ip, port FROM users WHERE active_peer = 1 AND username IN "
+                "SELECT ip, port, username FROM users WHERE active_peer = 1 AND username IN "
                 "(SELECT username FROM peer_files WHERE file_hash = ?)",
                 (file_hash,)
             )
@@ -150,3 +164,23 @@ class TrackerDao:
             (file_hash,)
         )
         return cursor.fetchone()
+    
+    def refresh_peer_files(self, username, current_hashes):
+        cursor = self.conn.cursor()
+        # garantir peer ativo
+        cursor.execute("UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE username = ?", (username,))
+        # obter hashes antigos
+        cursor.execute("SELECT file_hash FROM peer_files WHERE username = ?", (username,))
+        old = {row[0] for row in cursor.fetchall()}
+        new = set(current_hashes)
+        # inserir novos
+        for files in new - old:
+            cursor.execute("INSERT OR IGNORE INTO peer_files(username, file_hash) VALUES (?, ?)", (username, files))
+        # remover ausentes
+        for files in old - new:
+            cursor.execute("DELETE FROM peer_files WHERE username = ? AND file_hash = ?", (username, files))
+        # remover arquivos órfãos
+        cursor.execute(
+            "DELETE FROM files WHERE file_hash NOT IN (SELECT file_hash FROM peer_files)"
+        )
+        self.conn.commit()

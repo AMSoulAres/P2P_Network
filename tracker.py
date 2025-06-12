@@ -66,12 +66,16 @@ class Tracker:
             return self.handle_register(request)
         elif method == 'login':
             return self.handle_login(request)
+        elif method == 'heartbeat':
+            return self.handle_heartbeat(request, current_username)
         elif method == 'announce':
             return self.handle_announce(request, current_username)
         elif method == 'get_peers': 
             return self.handle_get_active_peers_w_file(request)
         elif method == 'get_file_metadata':
             return self.handle_get_file_metadata(request)
+        elif method == 'partial_announce':
+            return self.handle_partial_announce(request, current_username)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -107,6 +111,15 @@ class Tracker:
         
         self.db.add_active_peer(username, ip, port)
         return {'status': 'success', 'message': 'Login bem-sucedido'}
+
+    def handle_heartbeat(self, request, username):
+        hashes = request.get('file_hashes', [])
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        # atualiza timestamp e refresh de arquivos do peer
+        self.db.refresh_peer_files(username, hashes)
+        return {'status': 'success', 'message': 'Heartbeat recebido'}
     
     def remove_peer(self, username):
         self.db.remove_peer_files(username)
@@ -133,6 +146,21 @@ class Tracker:
                 return {'status': 'error', 'message': 'Erro ao registrar arquivo'}
         else:
             return {'status': 'error', 'message': message}
+
+    def handle_partial_announce(self, request, username):
+        file_hash = request.get('file_hash')
+        if not file_hash or not username:
+            return {'status': 'error', 'message': 'Dados faltando'}
+
+        is_peer_active, message = self.verify_active_peer(username)
+        if not is_peer_active:
+            return {'status': 'error', 'message': message}
+
+        if self.db.register_partial_file(username, file_hash):
+            return {'status': 'success', 'message': 'Anúncio parcial registrado'}
+        else:
+            return {'status': 'error', 'message': 'Erro ao registrar parcial'}
+
         
     def verify_active_peer(self, username):
         dao_result = self.db.verify_active_peer(username)
@@ -162,7 +190,6 @@ class Tracker:
 
         # Obter peers ativos com o arquivo
         peers = self.db.get_active_peers_with_file(file_hash)
-        print(f"Peers ativos com o arquivo {file_hash}: {peers}")
         if not peers:
             return {'status': 'error', 'message': 'Nenhum peer ativo com o arquivo encontrado'}
         return {'status': 'success', 'peers': peers}
