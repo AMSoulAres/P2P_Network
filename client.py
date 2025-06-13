@@ -169,6 +169,7 @@ class Peer(cmd.Cmd):
                 os.makedirs(self.download_dir, exist_ok=True)
                 print("Login bem-sucedido. Salve, " + username)
                 threading.Thread(target=self.start_heartbeat, daemon=True).start()
+                self.announce_all_files()
             else:
                 print(response.get('message'))
 
@@ -398,6 +399,40 @@ class Peer(cmd.Cmd):
                 continue
                 
         return availability
+    
+    def do_list_peers(self, arg):
+        """
+        Lista os peers disponíveis no tracker
+        
+        Uso: list_peers <file_hash>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Digite o hash do arquivo")
+            return
+        file_hash = args[0]
+        
+        request = {'method': 'get_peers', 'file_hash': file_hash}
+        response = self.send_request(request)
+        
+        if not response or response.get('status') != 'success':
+            print("Erro ao obter peers:", response.get('message', 'Erro desconhecido'))
+            return
+        
+        peers = response.get('peers', [])
+        peers = [tuple(peer) for peer in peers if peer[2] != self.username]
+
+        if not peers:
+            print("Nenhum peer disponível com este arquivo")
+            return
+        
+        print(f"Encontrados {len(peers)} peers com o arquivo:")
+        for peer in peers:
+            print(f"{peer[0]}:{peer[1]} ({peer[2]})")
 
     # Utils
     def compute_file_checksum(self, file_name, chunk_size=CHUNK_SIZE):  # TODO: trocar para 1MB
@@ -443,9 +478,6 @@ class Peer(cmd.Cmd):
     def download_chunk(self, file_hash, chunk_index, expected_hash, peer, temp_dir):
         peer_ip, peer_port, _ = peer
         chunk_file = os.path.join(temp_dir, f"{chunk_index}.chunk")
-
-        # print("Baixando chunk", chunk_index, "de", peer_ip, ":", peer_port)
-        
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(50)  # Timeout de 10 segundos
@@ -462,23 +494,22 @@ class Peer(cmd.Cmd):
                 # Receber chunk
                 chunk_data = b''
                 remaining = CHUNK_SIZE
-                
                 while remaining > 0:
                     data = s.recv(min(4096, remaining))
                     if not data:
                         break
                     chunk_data += data
                     remaining -= len(data)
-                    
-                    # Verificar integridade
-                    chunk_hash = hashlib.sha256(chunk_data).hexdigest()
-                    if chunk_hash != expected_hash:
-                        print(f"Chunk {chunk_index} corrompido: esperado {expected_hash}, recebido {chunk_hash}")
-                        return False
 
-                    with open(chunk_file, 'wb') as f:
-                        f.write(chunk_data)
-            print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}")
+                # Só agora verifica o hash e salva o arquivo
+                chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+                if chunk_hash != expected_hash:
+                    print(f"Chunk {chunk_index} corrompido: esperado {expected_hash}, recebido {chunk_hash}")
+                    return False
+
+                with open(chunk_file, 'wb') as f:
+                    f.write(chunk_data)
+            print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}:{peer_port}")
 
             # Atualizar estado do download para seed parcial
             self.download_lock.acquire()
@@ -590,7 +621,8 @@ class Peer(cmd.Cmd):
                             total_sent += sent
                         print(f"Chunk {chunk_index} ({len(chunk_data)} bytes) enviado com sucesso")
                 except Exception as e:
-                    print(f"Erro ao ler chunk: {str(e)}")
+                    print(f"Erro ao ler chunk: {e}")
+                    traceback.print_exc()
                     client_socket.send(json.dumps({"status": "error", "message": "Chunk não encontrado"})
                                        .encode() + b'\n')
                 return
@@ -622,6 +654,42 @@ class Peer(cmd.Cmd):
                 client_socket.send(json.dumps({"status": "error", "message": "Requisição inválida"})
                                    .encode() + b'\n')
                 return
+            
+    def announce_all_files(self):
+        """Anuncia todos os arquivos da pasta downloads/{username} ao tracker."""
+        if not self.logged_in or not self.username:
+            return
+        user_dir = self.download_dir
+        if not os.path.isdir(user_dir):
+            return
+        for fname in os.listdir(user_dir):
+            fpath = os.path.join(user_dir, fname)
+            if os.path.isfile(fpath):
+                try:
+                    name = os.path.basename(fpath)
+                    size = os.path.getsize(fpath)
+                    file_hash, chunk_hashes = self.compute_file_checksum(fpath)
+                    if file_hash in self.shared_files:
+                        continue
+                    self.shared_files[file_hash] = {
+                        'path': fpath,
+                        'chunks': chunk_hashes,
+                        'size': size,
+                        'name': name
+                    }
+                    print(f"Auto-anunciando arquivo: {name} ({size} bytes, hash: {file_hash}, chunks: {len(chunk_hashes)})")
+                    request = {
+                        'method': 'announce',
+                        'name': name,
+                        'size': size,
+                        'hash': file_hash,
+                        'chunks': chunk_hashes
+                    }
+                    response = self.send_request(request)
+                    if response:
+                        print(response.get('message', 'Erro desconhecido'))
+                except Exception as e:
+                    print(f"Erro ao anunciar {fpath}: {str(e)}")
 
 if __name__ == '__main__':
     cli = Peer('localhost', 5000)
