@@ -5,6 +5,9 @@ import hashlib
 from tracker_dao import TrackerDao
 from datetime import datetime, timedelta
 TEMPO_LOGIN = 15 # Tempo de login em minutos
+W_TIME = 0.01      # w1: peso do tempo conectado
+W_BYTES = 0.0001   # w2: peso dos bytes enviados
+W_CHUNKS = 1       # w3: peso dos chunks servidos
 
 class Tracker:
     def __init__(self, host, port):
@@ -76,6 +79,10 @@ class Tracker:
             return self.handle_get_file_metadata(request)
         elif method == 'partial_announce':
             return self.handle_partial_announce(request, current_username)
+        elif method == 'list_online_users':
+            return self.handle_list_online_users()
+        elif method == 'get_peer_address':
+            return self.handle_get_peer_address(request)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -119,7 +126,19 @@ class Tracker:
             return {'status': 'error', 'message': msg}
         # atualiza timestamp e refresh de arquivos do peer
         self.db.refresh_peer_files(username, hashes)
-        return {'status': 'success', 'message': 'Heartbeat recebido'}
+
+        metrics = request.get('metrics', {})
+        bytes_sent = metrics.get('bytes_sent', 0)
+        time_online = metrics.get('time_online', 0)
+        chunks_served = metrics.get('chunks_served', 0)
+        self.db.update_peer_score(
+            username,
+            bytes_sent,
+            time_online,
+            chunks_served
+        )
+        score = (W_TIME * time_online) + (W_BYTES * bytes_sent) + (W_CHUNKS * chunks_served)
+        return {'status': 'success', 'score': score}
     
     def remove_peer(self, username):
         self.db.remove_peer_files(username)
@@ -190,9 +209,17 @@ class Tracker:
 
         # Obter peers ativos com o arquivo
         peers = self.db.get_active_peers_with_file(file_hash)
+        peers = sorted(peers, key=lambda x: self._calculate_peer_score(x), reverse=True)
+        peers = [(p[0], p[1], p[2], self._calculate_peer_score(p)) for p in peers]
         if not peers:
             return {'status': 'error', 'message': 'Nenhum peer ativo com o arquivo encontrado'}
         return {'status': 'success', 'peers': peers}
+
+    def _calculate_peer_score(self, peer):
+        bytes_sent = peer[3] or 0
+        time_online = peer[4] or 0
+        chunks_served = peer[5] or 0
+        return (W_TIME * time_online) + (W_BYTES * bytes_sent) + (W_CHUNKS * chunks_served)
     
     def handle_get_file_metadata(self, request):
         file_hash = request.get('file_hash')
@@ -209,6 +236,17 @@ class Tracker:
             'chunk_hashes': json.loads(result[2]) if result[2] else []
         }
         return {'status': 'success', 'metadata': metadata}
+    
+    def handle_list_online_users(self):
+        users = self.db.get_online_users()
+        return {'status': 'success', 'users': users}
+    
+    def handle_get_peer_address(self, request):
+        username = request.get('username')
+        address = self.db.get_peer_address(username)
+        if address:
+            return {'status': 'success', 'ip': address[0], 'port': address[1]}
+        return {'status': 'error', 'message': 'Usuário não encontrado'}
 
 if __name__ == '__main__':
     tracker = Tracker('localhost', 5000)

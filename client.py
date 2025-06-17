@@ -1,5 +1,7 @@
 import cmd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import math
 import os
 import random
 import shutil
@@ -14,6 +16,24 @@ import traceback
 CHUNK_SIZE = 1024*1024  # 1MB, tamanho do chunk para download
 HEARTBEAT_INTERVAL = 60  # segundos
 
+class PerformanceLogger:
+    def __init__(self, username):
+        self.username = username
+        os.makedirs("logs", exist_ok=True)
+        log_file = f"logs/peer_{username}.csv"
+        logging.basicConfig(filename=log_file, level=logging.INFO, 
+                    format='%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        
+        # Cabeçalho do CSV
+        if os.stat(log_file).st_size == 0:
+            logging.info("event,file_hash,size,chunks,peers,time,success,speed")
+
+    def log_download_start(self, file_hash, size, chunks, peers):
+        logging.info(f"download_start,{file_hash},{size},{chunks},{peers},,,,")
+
+    def log_download_end(self, file_hash, time_taken, success, speed):
+        logging.info(f"download_end,{file_hash},,,,{time_taken},{success},{speed}")
+
 class Peer(cmd.Cmd):
     prompt = 'peer> '
     def __init__(self, tracker_host, tracker_port):
@@ -23,6 +43,11 @@ class Peer(cmd.Cmd):
         self.sock = None
         self.logged_in = False
         self.username = None
+        self.bytes_sent_since_last_heartbeat = 0
+        self.chunks_served_since_last_heartbeat = 0
+        self.logger = PerformanceLogger(self.username)
+        self.base_connections = 2  # Valor base
+        self.score = 0
 
         self.shared_files = {}  # arquivos completos compartilhados
         self.downloading_files = {}  # arquivos com download em andamento (para seed parcial)
@@ -46,10 +71,29 @@ class Peer(cmd.Cmd):
 
     def start_heartbeat(self):
         while self.logged_in:
-            hashes = list(self.shared_files.keys())
-            hashes += list(self.downloading_files.keys())
-            self.send_request({'method': 'heartbeat', 'file_hashes': hashes})
-            print(f"Enviando heartbeat para o tracker com {len(hashes)} arquivos compartilhados")
+            # Coletar métricas
+            time_online = HEARTBEAT_INTERVAL
+            metrics = {
+                'bytes_sent': self.bytes_sent_since_last_heartbeat,
+                'chunks_served': self.chunks_served_since_last_heartbeat,
+                'time_online': time_online
+            }
+            hashes = list(self.shared_files.keys()) + list(self.downloading_files.keys())
+            response = self.send_request({
+                'method': 'heartbeat',
+                'file_hashes': hashes,
+                'metrics': metrics
+            })
+
+            # Resetar contadores
+            self.bytes_sent_since_last_heartbeat = 0
+            self.chunks_serve_since_last_heartbeat = 0
+
+            # Atualizar configuração dinâmica
+            if response and 'score' in response:
+                self.score = response['score']
+
+            # print(f"Enviando heartbeat para o tracker com {len(hashes)} arquivos compartilhados")
             time.sleep(HEARTBEAT_INTERVAL) # Vai rodar numa thread separada, então não bloqueia o loop principal
 
     def start_chunk_server(self):
@@ -61,7 +105,7 @@ class Peer(cmd.Cmd):
         
         while True:
             client_socket, addr = server_socket.accept()
-            threading.Thread(target=self.handle_chunk_request, args=(client_socket,)).start()
+            threading.Thread(target=self.handle_peer_request, args=(client_socket,)).start()
 
     def send_request(self, request):
         """Envia uma requisição para o tracker e retorna a resposta"""
@@ -243,6 +287,46 @@ class Peer(cmd.Cmd):
         if self.sock:
             self.sock.close()
         return True
+    
+    def do_send_message(self, arg):
+        args = arg.split(maxsplit=1)
+        if len(args) < 2:
+            print("Uso: send_message <username> <mensagem>")
+            return
+            
+        target_user, message = args
+        request = {
+            'method': 'get_peer_address', 
+            'username': target_user
+        }
+        response = self.send_request(request)
+        
+        if response and response.get('status') == 'success':
+            ip, port = response['ip'], response['port']
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((ip, port))
+                    s.sendall(json.dumps({
+                        'action': 'chat_message',
+                        'from': self.username,
+                        'message': message
+                    }).encode() + b'\n')
+                print(f"Mensagem enviada para {target_user}")
+            except Exception as e:
+                print(f"Erro ao enviar mensagem: {e}")
+        else:
+            print("Usuário não encontrado ou offline")
+    
+    def do_list_online(self, arg):
+        request = {'method': 'list_online_users'}
+        response = self.send_request(request)
+        if response and response.get('status') == 'success':
+            print("Usuários online:")
+            for user in response['users']:
+                print(f"- {user}")
+        else:
+            print("Erro ao obter lista")
+
 
     def do_download(self, arg):
         """Baixa o arquivo especificado da rede P2P.
@@ -258,6 +342,7 @@ class Peer(cmd.Cmd):
             return
         file_hash = args[0]
         
+        start_time = time.time()
         # Obter lista de peers com o arquivo
         request = {'method': 'get_peers', 'file_hash': file_hash}
         response = self.send_request(request)
@@ -305,8 +390,10 @@ class Peer(cmd.Cmd):
         
         # Obter disponibilidade de chunks entre peers
         chunk_availability = self.get_chunk_availability(file_hash, peers)
+        max_workers = self.base_connections + math.floor(self.score // 100)  # Ajustar número de workers dinamicamente (incentivo por score)
+        print(f"Usando até {max_workers} conexões simultâneas (score: {self.score:.1f})")
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             # Determinar ordem de download dos chunks
             # Ordenar chunks pela raridade (menos peers primeiro)
@@ -357,13 +444,19 @@ class Peer(cmd.Cmd):
         shutil.rmtree(temp_dir, ignore_errors=True)
         self.downloading_files.pop(file_hash, None)  # Remover download em andamento
 
+        end_time = time.time()
+        download_time = end_time - start_time
+        speed = file_size / download_time if download_time > 0 else 0
+        success = os.path.exists(download_path)
+        self.logger.log_download_end(file_hash, download_time, success, speed)
+
     # Nova função para consultar peers e mapear disponibilidade de chunks
     def get_chunk_availability(self, file_hash, peers):
         """Consulta cada peer para saber quais chunks do arquivo ele possui.
            Retorna um dicionário {chunk_index: [lista_de_peers_com_chunk]}"""
         availability = {}
         for peer in peers:
-            peer_ip, peer_port, _ = peer
+            peer_ip, peer_port, _, _ = peer
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(5)
@@ -458,7 +551,7 @@ class Peer(cmd.Cmd):
         attempts = 0
         tried_peers = set() #soft blacklist para evitar tentar o mesmo peer várias vezes
         while attempts < 2:
-            print(f"Tentando baixar chunk {chunk_index} de {len(peers_with_chunk)} peers disponíveis (tentativa {attempts + 1})")
+            # print(f"Tentando baixar chunk {chunk_index} de {len(peers_with_chunk)} peers disponíveis (tentativa {attempts + 1})")
             # Selecionar peer não tentado e não blacklisted
             candidates = [peer for peer in peers_with_chunk if peer not in tried_peers]
             if not candidates:
@@ -476,7 +569,7 @@ class Peer(cmd.Cmd):
         return False
     
     def download_chunk(self, file_hash, chunk_index, expected_hash, peer, temp_dir):
-        peer_ip, peer_port, _ = peer
+        peer_ip, peer_port, _, _ = peer
         chunk_file = os.path.join(temp_dir, f"{chunk_index}.chunk")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -509,7 +602,7 @@ class Peer(cmd.Cmd):
 
                 with open(chunk_file, 'wb') as f:
                     f.write(chunk_data)
-            print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}:{peer_port}")
+            # print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}:{peer_port}")
 
             # Atualizar estado do download para seed parcial
             self.download_lock.acquire()
@@ -563,7 +656,7 @@ class Peer(cmd.Cmd):
             print(f"Erro ao montar arquivo: {str(e)}")
             return False
         
-    def handle_chunk_request(self, client_socket):
+    def handle_peer_request(self, client_socket):
         """Lida com solicitações de chunks de outros peers"""
         try:
             # Ler toda a solicitação de uma vez
@@ -576,15 +669,22 @@ class Peer(cmd.Cmd):
                 message, _ = data.split('\n', 1)
                 request = json.loads(message)
                 print(f"Recebido pedido de chunk: {request}")
-                self.process_chunk_request(client_socket, request)
+                self.process_peer_request(client_socket, request)
         except Exception as e:
             print(f"Erro no servidor de chunks: {str(e)}")
         finally:
             client_socket.close()  # Fechar conexão após o envio
 
-    def process_chunk_request(self, client_socket, request):
+    def process_peer_request(self, client_socket, request):
         action = request.get('action')
         
+        if action == 'chat_message':
+            from_user = request.get('from')
+            message = request.get('message')
+            print(f"\n[CHAT de {from_user}]: {message}\n{self.prompt}", end='', flush=True)
+            client_socket.close()
+            return
+
         if action == 'list_chunks':
             file_hash = request.get('file_hash')
             # Retornar índices de chunks disponíveis neste peer
@@ -620,6 +720,12 @@ class Peer(cmd.Cmd):
                                 raise RuntimeError("Conexão fechada durante envio do chunk")
                             total_sent += sent
                         print(f"Chunk {chunk_index} ({len(chunk_data)} bytes) enviado com sucesso")
+                        self.bytes_sent_since_last_heartbeat += len(chunk_data)
+                        self.chunks_served_since_last_heartbeat += 1
+                except FileNotFoundError:
+                    print(f"Arquivo {file_hash} não encontrado no diretório compartilhado")
+                    client_socket.send(json.dumps({"status": "error", "message": "Chunk não encontrado"})
+                                       .encode() + b'\n')
                 except Exception as e:
                     print(f"Erro ao ler chunk: {e}")
                     traceback.print_exc()
@@ -645,6 +751,8 @@ class Peer(cmd.Cmd):
                                 raise RuntimeError("Conexão fechada durante envio do chunk")
                             total_sent += sent
                         print(f"Chunk {chunk_index} enviado ({len(chunk_data)} bytes)")
+                        self.bytes_sent_since_last_heartbeat += len(chunk_data)
+                        self.chunks_served_since_last_heartbeat += 1
                 except Exception as e:
                     print(f"Erro ao ler chunk parcial: {str(e)}")
                     client_socket.send(json.dumps({"status": "error", "message": "Chunk não encontrado"})
