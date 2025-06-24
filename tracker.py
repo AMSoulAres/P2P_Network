@@ -83,6 +83,8 @@ class Tracker:
             return self.handle_list_online_users()
         elif method == 'get_peer_address':
             return self.handle_get_peer_address(request)
+        elif method == 'get_peer_chat_address':
+            return self.handle_get_peer_chat_address(request)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -91,13 +93,14 @@ class Tracker:
         password = request.get('password')
         ip = request.get('ip')
         port = request.get('port')
+        chat_port = request.get('chat_port')
 
         if not username or username == '' or not password or password == '':
             return {'status': 'error', 'message': 'username ou password faltando'}
         
         hashed_password = self.hash_password(password)
 
-        if self.db.register_user(username, hashed_password, ip, port):
+        if self.db.register_user(username, hashed_password, ip, port, chat_port):
             return {'status': 'success', 'message': 'Registro bem-sucedido'}
         else:
             return {'status': 'error', 'message': 'Usuário já existe'}
@@ -107,6 +110,7 @@ class Tracker:
         password = request.get('password')
         ip = request.get('ip')
         port = request.get('port')
+        chat_port = request.get('chat_port')
 
         if not username or username == '' or not password or password == '':
             return {'status': 'error', 'message': 'username ou password faltando'}
@@ -116,7 +120,7 @@ class Tracker:
         if not self.db.verify_user(username, hashed_password):
             return {'status': 'error', 'message': 'Credenciais inválidas'}
         
-        self.db.add_active_peer(username, ip, port)
+        self.db.add_active_peer(username, ip, port, chat_port)
         return {'status': 'success', 'message': 'Login bem-sucedido'}
 
     def handle_heartbeat(self, request, username):
@@ -244,6 +248,13 @@ class Tracker:
     def handle_get_peer_address(self, request):
         username = request.get('username')
         address = self.db.get_peer_address(username)
+        if address:
+            return {'status': 'success', 'ip': address[0], 'port': address[1]}
+        return {'status': 'error', 'message': 'Usuário não encontrado'}
+    
+    def handle_get_peer_chat_address(self, request):
+        username = request.get('username')
+        address = self.db.get_peer_chat_address(username)
         if address:
             return {'status': 'success', 'ip': address[0], 'port': address[1]}
         return {'status': 'error', 'message': 'Usuário não encontrado'}

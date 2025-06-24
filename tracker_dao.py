@@ -17,6 +17,7 @@ class TrackerDao:
                 password TEXT NOT NULL,
                 ip TEXT NOT NULL,
                 port INTEGER NOT NULL,
+                chat_port INTEGER DEFAULT 0,
                 active_peer INTEGER DEFAULT 0,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -58,11 +59,11 @@ class TrackerDao:
 
         self.conn.commit()
 
-    def register_user(self, username, password_hash, ip, port):
+    def register_user(self, username, password_hash, ip, port, chat_port):
         try:
             self.conn.execute(
-                "INSERT INTO users (username, password, ip, port) VALUES (?, ?, ?, ?)",
-                (username, password_hash, ip, port)
+                "INSERT INTO users (username, password, ip, port, chat_port) VALUES (?, ?, ?, ?, ?)",
+                (username, password_hash, ip, port, chat_port)
             )
             self.conn.commit()
             return True
@@ -85,13 +86,13 @@ class TrackerDao:
 
         return cursor.fetchone()
 
-    def add_active_peer(self, username, ip, port):
+    def add_active_peer(self, username, ip, port, chat_port):
         # Timestamp atual do banco de dados (atualizar quando implementar heartbeat)
         # Atualiza o timestamp do último login
         # Atualiza o IP e a porta do peer ativo
         self.conn.execute(
-            "UPDATE users SET ip = ?, port = ?, active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
-            (ip, port, username,)
+            "UPDATE users SET ip = ?, port = ?, chat_port = ?, active_peer = 1, last_seen = CURRENT_TIMESTAMP WHERE username = ?",
+            (ip, port, chat_port, username,)
         )
         self.conn.commit()
 
@@ -204,6 +205,13 @@ class TrackerDao:
     def get_peer_address(self, username):
         cursor = self.conn.execute(
             "SELECT ip, port FROM users WHERE username = ? AND active_peer = 1",
+            (username,)
+        )
+        return cursor.fetchone()
+    
+    def get_peer_chat_address(self, username):
+        cursor = self.conn.execute(
+            "SELECT ip, chat_port FROM users WHERE username = ? AND active_peer = 1",
             (username,)
         )
         return cursor.fetchone()
