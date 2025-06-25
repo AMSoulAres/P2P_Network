@@ -4,9 +4,8 @@ import json
 import hashlib
 from tracker_dao import TrackerDao
 from datetime import datetime, timedelta
-TEMPO_LOGIN = 15 # Tempo de login em minutos
+TEMPO_LOGIN = 1000 # Tempo de login em minutos
 W_TIME = 0.01      # w1: peso do tempo conectado
-W_BYTES = 0.0001   # w2: peso dos bytes enviados
 W_CHUNKS = 1       # w3: peso dos chunks servidos
 
 class Tracker:
@@ -132,16 +131,16 @@ class Tracker:
         self.db.refresh_peer_files(username, hashes)
 
         metrics = request.get('metrics', {})
-        bytes_sent = metrics.get('bytes_sent', 0)
         time_online = metrics.get('time_online', 0)
         chunks_served = metrics.get('chunks_served', 0)
         self.db.update_peer_score(
             username,
-            bytes_sent,
             time_online,
             chunks_served
         )
-        score = (W_TIME * time_online) + (W_BYTES * bytes_sent) + (W_CHUNKS * chunks_served)
+        time_online, chunks_served = self.db.get_peer_score(username)
+
+        score = (W_TIME * time_online) + (W_CHUNKS * chunks_served)
         return {'status': 'success', 'score': score}
     
     def remove_peer(self, username):
@@ -220,10 +219,9 @@ class Tracker:
         return {'status': 'success', 'peers': peers}
 
     def _calculate_peer_score(self, peer):
-        bytes_sent = peer[3] or 0
-        time_online = peer[4] or 0
-        chunks_served = peer[5] or 0
-        return (W_TIME * time_online) + (W_BYTES * bytes_sent) + (W_CHUNKS * chunks_served)
+        time_online = peer[3] or 0
+        chunks_served = peer[4] or 0
+        return (W_TIME * time_online) + (W_CHUNKS * chunks_served)
     
     def handle_get_file_metadata(self, request):
         file_hash = request.get('file_hash')

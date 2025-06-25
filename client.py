@@ -15,24 +15,7 @@ import traceback
 
 CHUNK_SIZE = 1024*1024  # 1MB, tamanho do chunk para download
 HEARTBEAT_INTERVAL = 60  # segundos
-
-class PerformanceLogger:
-    def __init__(self, username):
-        self.username = username
-        os.makedirs("logs", exist_ok=True)
-        log_file = f"logs/peer_{username}.csv"
-        logging.basicConfig(filename=log_file, level=logging.INFO, 
-                    format='%(asctime)s,%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        
-        # Cabeçalho do CSV
-        if os.stat(log_file).st_size == 0:
-            logging.info("event,file_hash,size,chunks,peers,time,success,speed")
-
-    def log_download_start(self, file_hash, size, chunks, peers):
-        logging.info(f"download_start,{file_hash},{size},{chunks},{peers},,,,")
-
-    def log_download_end(self, file_hash, time_taken, success, speed):
-        logging.info(f"download_end,{file_hash},,,,{time_taken},{success},{speed}")
+SCORE_DIVIDER = 1000  # Divisor para calcular o score baseado no tempo online
 
 class Peer(cmd.Cmd):
     prompt = 'peer> '
@@ -43,9 +26,7 @@ class Peer(cmd.Cmd):
         self.sock = None
         self.logged_in = False
         self.username = None
-        self.bytes_sent_since_last_heartbeat = 0
         self.chunks_served_since_last_heartbeat = 0
-        self.logger = PerformanceLogger(self.username)
         self.base_connections = 2  # Valor base
         self.score = 0
 
@@ -83,7 +64,6 @@ class Peer(cmd.Cmd):
             # Coletar métricas
             time_online = HEARTBEAT_INTERVAL
             metrics = {
-                'bytes_sent': self.bytes_sent_since_last_heartbeat,
                 'chunks_served': self.chunks_served_since_last_heartbeat,
                 'time_online': time_online
             }
@@ -95,14 +75,13 @@ class Peer(cmd.Cmd):
             })
 
             # Resetar contadores
-            self.bytes_sent_since_last_heartbeat = 0
             self.chunks_serve_since_last_heartbeat = 0
 
             # Atualizar configuração dinâmica
             if response and 'score' in response:
                 self.score = response['score']
 
-            # print(f"Enviando heartbeat para o tracker com {len(hashes)} arquivos compartilhados")
+            print(f"Enviando heartbeat para o tracker com {len(hashes)} arquivos compartilhados")
             time.sleep(HEARTBEAT_INTERVAL) # Vai rodar numa thread separada, então não bloqueia o loop principal
 
     def start_chunk_server(self):
@@ -361,7 +340,7 @@ class Peer(cmd.Cmd):
         
         # Obter disponibilidade de chunks entre peers
         chunk_availability = self.get_chunk_availability(file_hash, peers)
-        max_workers = self.base_connections + math.floor(self.score // 100)  # Ajustar número de workers dinamicamente (incentivo por score)
+        max_workers = self.base_connections + math.floor(self.score // SCORE_DIVIDER)  # Ajustar número de workers dinamicamente (incentivo por score)
         print(f"Usando até {max_workers} conexões simultâneas (score: {self.score:.1f})")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -398,7 +377,7 @@ class Peer(cmd.Cmd):
         if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path):
             download_time = time.time() - start_time
             file_size = os.path.getsize(download_path)
-            print(f"\nDownload concluído! {file_size/CHUNK_SIZE:.2f} KB em {download_time:.1f} segundos")
+            print(f"\nDownload concluído! {file_size/CHUNK_SIZE:.2f} MB em {download_time:.1f} segundos")
             print(f"Arquivo salvo em: {download_path}")
             # Adicionar arquivo completo aos compartilhados
             self.shared_files[file_hash] = {
@@ -419,7 +398,7 @@ class Peer(cmd.Cmd):
         download_time = end_time - start_time
         speed = file_size / download_time if download_time > 0 else 0
         success = os.path.exists(download_path)
-        self.logger.log_download_end(file_hash, download_time, success, speed)
+        print(f"Download {'completo' if success else 'falhou'} - {file_size/CHUNK_SIZE:.2f} MB em {download_time:.2f} segundos ({speed/CHUNK_SIZE:.2f} MB/s)")
 
     # Nova função para consultar peers e mapear disponibilidade de chunks
     def get_chunk_availability(self, file_hash, peers):
@@ -684,7 +663,6 @@ class Peer(cmd.Cmd):
                                 raise RuntimeError("Conexão fechada durante envio do chunk")
                             total_sent += sent
                         print(f"Chunk {chunk_index} ({len(chunk_data)} bytes) enviado com sucesso")
-                        self.bytes_sent_since_last_heartbeat += len(chunk_data)
                         self.chunks_served_since_last_heartbeat += 1
                 except FileNotFoundError:
                     print(f"Arquivo {file_hash} não encontrado no diretório compartilhado")
@@ -715,7 +693,6 @@ class Peer(cmd.Cmd):
                                 raise RuntimeError("Conexão fechada durante envio do chunk")
                             total_sent += sent
                         print(f"Chunk {chunk_index} enviado ({len(chunk_data)} bytes)")
-                        self.bytes_sent_since_last_heartbeat += len(chunk_data)
                         self.chunks_served_since_last_heartbeat += 1
                 except Exception as e:
                     print(f"Erro ao ler chunk parcial: {str(e)}")
@@ -734,6 +711,8 @@ class Peer(cmd.Cmd):
         user_dir = self.download_dir
         if not os.path.isdir(user_dir):
             return
+        
+        # Anúncio de arquivos completos
         for fname in os.listdir(user_dir):
             fpath = os.path.join(user_dir, fname)
             if os.path.isfile(fpath):
@@ -762,7 +741,39 @@ class Peer(cmd.Cmd):
                         print(response.get('message', 'Erro desconhecido'))
                 except Exception as e:
                     print(f"Erro ao anunciar {fpath}: {str(e)}")
-    
+        
+        # Anunciar arquivos parciais (downloads interrompidos)
+        for fname in os.listdir(user_dir):
+            temp_dir = os.path.join(user_dir, fname)
+            if os.path.isdir(temp_dir) and fname.startswith("temp_"):
+                file_hash = fname.replace("temp_", "")
+                chunk_files = [f for f in os.listdir(temp_dir) if f.endswith(".chunk")]
+                if not chunk_files:
+                    continue
+                # Descobrir quais chunks já foram baixados
+                chunk_indices = [int(f.split(".")[0]) for f in chunk_files if f.split(".")[0].isdigit()]
+                if not chunk_indices:
+                    continue
+                print(f"Auto-anunciando arquivo parcial: {file_hash} (chunks: {sorted(chunk_indices)})")
+                
+                self.downloading_files[file_hash] = {'temp_dir': temp_dir, 'chunks': []}
+                self.downloading_files[file_hash]['chunks'].extend(chunk_indices)
+                request = {
+                    'method': 'partial_announce',
+                    'file_hash': file_hash,
+                    'chunks': sorted(chunk_indices)
+                }
+                response = self.send_request(request)
+                if response:
+                    print(response.get('message', 'Erro desconhecido'))
+
+    def do_score(self, arg):
+        """Exibe a pontuação atual do usuário."""
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        print(f"Sua pontuação atual é: {self.score:.1f}, permitindo ter até {self.base_connections + math.floor(self.score // SCORE_DIVIDER)} conexões simultâneas.")
+        
     # <<<< CHAT >>>>
 
     def start_chat_server(self):
