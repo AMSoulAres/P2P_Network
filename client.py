@@ -63,6 +63,10 @@ class Peer(cmd.Cmd):
         threading.Thread(target=self.start_chat_server, daemon=True).start()
 
         self.download_lock = threading.Lock()  # Lock para sincronizar dados de download
+        
+        self.chat_connections = {}
+        self.chat_lock = threading.Lock()
+        self.chat_target_user = None
 
         self.connect_to_tracker()
 
@@ -758,6 +762,8 @@ class Peer(cmd.Cmd):
                         print(response.get('message', 'Erro desconhecido'))
                 except Exception as e:
                     print(f"Erro ao anunciar {fpath}: {str(e)}")
+    
+    # <<<< CHAT >>>>
 
     def start_chat_server(self):
         """Inicia o servidor de chat para aceitar conexões de outros peers."""
@@ -773,13 +779,12 @@ class Peer(cmd.Cmd):
     def handle_chat_session(self, sock):
         """Lida com uma sessão de chat recebida, ouvindo mensagens em loop."""
         buffer = ""
-        peer_name = "desconhecido"
+        peer_name = None
         try:
             while True:
                 data = sock.recv(4096).decode()
                 if not data:
-                    print(f"\n[INFO] Conexão de chat com {peer_name} encerrada.")
-                    break
+                    break  # Conexão fechada pelo outro peer
                 
                 buffer += data
                 while '\n' in buffer:
@@ -787,39 +792,48 @@ class Peer(cmd.Cmd):
                     try:
                         msg_obj = json.loads(message_str)
                         if msg_obj.get('action') == 'chat_message':
-                            peer_name = msg_obj.get('from', peer_name)
-                            # Exibe a mensagem recebida e redesenha o prompt
+                            # Na primeira mensagem, registra a conexão
+                            if peer_name is None:
+                                peer_name = msg_obj.get('from')
+                                if peer_name:
+                                    with self.chat_lock:
+                                        self.chat_connections[peer_name] = sock
+                                    print(f"\n--- Chat iniciado por {peer_name}. Use 'chat {peer_name}' para responder. ---")
+                            
                             print(f"\n[CHAT de {peer_name}]: {msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
                     except json.JSONDecodeError:
-                        pass # Mensagem incompleta, aguarda mais dados
+                        pass
         except (ConnectionResetError, BrokenPipeError):
-            print(f"\n[INFO] Conexão de chat com {peer_name} foi perdida.")
+            pass
         finally:
-            sock.close()
+            if peer_name:
+                print(f"\n[INFO] Conexão com {peer_name} encerrada.")
+                self.close_chat_session(peer_name, announce=False)
+            else:
+                sock.close()
 
     def chat_receiver_loop(self, sock, peer_name):
-        """Ouve mensagens em uma sessão de chat que este peer iniciou."""
+        """Recebe mensagens em uma sessão de chat que este peer iniciou."""
         buffer = ""
         try:
             while True:
                 data = sock.recv(4096).decode()
                 if not data:
-                    print(f"\n--- Conexão com {peer_name} foi encerrada. Pressione Enter para voltar ao prompt. ---")
-                    break
+                    break # Conexão fechada pelo outro peer
                 
                 buffer += data
                 while '\n' in buffer:
                     message_str, buffer = buffer.split('\n', 1)
                     try:
                         msg_obj = json.loads(message_str)
-                        # \r para apagar a linha atual antes de imprimir a nova mensagem
-                        print(f"\r[{peer_name}]: {msg_obj.get('message')}")
+                        print(f"\n[CHAT de {peer_name}]: {msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
                     except json.JSONDecodeError:
                         pass
-        except ConnectionResetError:
-            print(f"\n--- Conexão com {peer_name} foi perdida. Pressione Enter para voltar ao prompt. ---")
+        except (ConnectionResetError, BrokenPipeError):
+            pass
         finally:
-            sock.close()
+            print(f"\n[INFO] Conexão com {peer_name} foi perdida.")
+            self.close_chat_session(peer_name, announce=False)
 
     def do_list_online(self, arg):
         request = {'method': 'list_online_users'}
@@ -831,57 +845,115 @@ class Peer(cmd.Cmd):
         else:
             print("Erro ao obter lista")
 
-    def do_send_message(self, arg):
-        """Inicia uma sessão de chat com um usuário.
-        Uso: send_message <username> <mensagem inicial>"""
-        args = arg.split(maxsplit=1)
-        if len(args) < 2:
-            print("Uso: send_message <username> <mensagem>")
+    def do_chat(self, arg):
+        """Inicia uma sessão de chat interativa com um usuário.
+        Uso: chat <username>"""
+        if not self.logged_in:
+            print("Autentique-se primeiro")
             return
-            
-        target_user, message = args
-        request = {
-            'method': 'get_peer_chat_address', 
-            'username': target_user
-        }
-        response = self.send_request(request)
         
-        if response and response.get('status') == 'success':
-            ip, port = response['ip'], response['port'] # Usar a porta de chat
-            try:
-                chat_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                chat_sock.connect((ip, port))
+        args = arg.split()
+        if not args:
+            print("Uso: chat <username>")
+            return
+        target_user = args[0]
 
-                # Envia a mensagem inicial
+        if target_user == self.username:
+            print("Você não pode conversar consigo mesmo.")
+            return
+
+        # Verifica ou cria a conexão
+        with self.chat_lock:
+            if target_user not in self.chat_connections:
+                request = {'method': 'get_peer_chat_address', 'username': target_user}
+                response = self.send_request(request)
+                
+                if not (response and response.get('status') == 'success'):
+                    print(f"Usuário '{target_user}' não encontrado ou offline.")
+                    return
+
+                ip, port = response['ip'], response['port']
+                try:
+                    chat_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    chat_sock.connect((ip, port))
+                    self.chat_connections[target_user] = chat_sock
+                    threading.Thread(target=self.chat_receiver_loop, args=(chat_sock, target_user), daemon=True).start()
+                except Exception as e:
+                    print(f"Erro ao iniciar chat com {target_user}: {e}")
+                    return
+
+        # Entra no modo chat
+        if self.chat_target_user is None:
+            print(f"--- Entrou no modo chat com {target_user}. Digite '/exit' para sair. ---")
+        self.chat_target_user = target_user
+        self.prompt = f'chat({target_user})> '
+        
+    def close_chat_session(self, username, announce=True):
+        """Fecha e limpa uma sessão de chat com um usuário específico."""
+        with self.chat_lock:
+            if username in self.chat_connections:
+                sock = self.chat_connections.pop(username)
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass # Socket já pode estar fechado
+                sock.close()
+                if announce:
+                    print(f"Sessão de chat com {username} foi encerrada.")
+
+    def do_close_chat(self, arg):
+        """Encerra uma sessão de chat ativa.
+        Uso: close_chat <username>"""
+        args = arg.split()
+        if not args:
+            print("Uso: close_chat <username>")
+            return
+        target_user = args[0]
+        self.close_chat_session(target_user)
+
+    def precmd(self, line):
+        """Intercepta comandos quando em modo de chat."""
+        if self.chat_target_user:
+            stripped_line = line.strip().lower()
+            # Estamos no modo chat
+            if stripped_line == '/exit':
+                print(f"--- Saindo do modo de chat com {self.chat_target_user}. A conexão permanece aberta. ---")
+                self.chat_target_user = None
+                self.prompt = 'peer> '
+                self.lastcmd = '' # Impede que uma linha vazia reative o chat
+                return ''  # Impede que o cmd processe '/exit' como um comando
+
+            if stripped_line == '/close':
+                print(f"--- Encerrando a conexão com {self.chat_target_user} e saindo do modo de chat. ---")
+                self.close_chat_session(self.chat_target_user)
+                self.chat_target_user = None
+                self.prompt = 'peer> '
+                self.lastcmd = '' # Impede que uma linha vazia reative o chat (bug do cmd)
+                return '' # Impede que o cmd processe '/close' como um comando
+
+            # Qualquer outra coisa digitada é uma mensagem de chat
+            message = line
+            if not message: # Ignora linhas em branco
+                return ''
+
+            try:
+                with self.chat_lock:
+                    chat_sock = self.chat_connections[self.chat_target_user]
+                
                 chat_sock.sendall(json.dumps({
                     'action': 'chat_message',
                     'from': self.username,
                     'message': message
                 }).encode() + b'\n')
-
-                # Inicia uma thread para receber mensagens deste peer
-                threading.Thread(target=self.chat_receiver_loop, args=(chat_sock, target_user), daemon=True).start()
-
-                # Loop para enviar mensagens do usuário atual
-                print(f"--- Chat com {target_user}. Digite '/exit' para sair. ---")
-                while True:
-                    msg_to_send = input()
-                    if msg_to_send.strip().lower() == '/exit':
-                        break
-                    
-                    chat_sock.sendall(json.dumps({
-                        'action': 'chat_message',
-                        'from': self.username,
-                        'message': msg_to_send
-                    }).encode() + b'\n')
-                
-                chat_sock.close()
-                print(f"--- Chat com {target_user} encerrado. ---")
-
-            except Exception as e:
-                print(f"Erro ao iniciar chat: {e}")
+            except (KeyError, BrokenPipeError, ConnectionResetError):
+                print(f"A conexão com {self.chat_target_user} foi perdida. Saindo do modo chat.")
+                self.close_chat_session(self.chat_target_user, announce=False)
+                self.chat_target_user = None
+                self.prompt = 'peer> '
+            
+            return '' # Impede que o cmd processe a mensagem como um comando
         else:
-            print("Usuário não encontrado ou offline")
+            return line # Modo normal, processa o comando como de costume
 if __name__ == '__main__':
     cli = Peer('localhost', 5000)
     cli.cmdloop()
