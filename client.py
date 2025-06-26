@@ -67,7 +67,15 @@ class Peer(cmd.Cmd):
                 'chunks_served': self.chunks_served_since_last_heartbeat,
                 'time_online': time_online
             }
-            hashes = list(self.shared_files.keys()) + list(self.downloading_files.keys())
+
+            hashes = []
+            
+            for file_hash, file_data in self.shared_files.items():
+                if os.path.isfile(os.path.join(self.download_dir,file_data['name'])):
+                    hashes.append(file_hash)
+
+            hashes = list(self.downloading_files.keys())
+
             response = self.send_request({
                 'method': 'heartbeat',
                 'file_hashes': hashes,
@@ -396,7 +404,7 @@ class Peer(cmd.Cmd):
                     print(f"Erro no download: {str(e.with_traceback())}")
         
         # Montar arquivo final
-        if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path):
+        if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path, file_name):
             download_time = time.time() - start_time
             file_size = os.path.getsize(download_path)
             print(f"\nDownload concluído! {file_size/CHUNK_SIZE:.2f} MB em {download_time:.1f} segundos")
@@ -412,6 +420,10 @@ class Peer(cmd.Cmd):
             print("\nFalha ao montar arquivo final")
             self.downloading_files.pop(file_hash, None)  # Remover download em andamento
             self.shared_files.pop(file_hash, None)  # Remover arquivo incompleto
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            if os.path.exists(download_path): os.remove(download_path)
+            return
+
         # Limpar diretório temporário
         shutil.rmtree(temp_dir, ignore_errors=True)
         self.downloading_files.pop(file_hash, None)  # Remover download em andamento
@@ -592,7 +604,7 @@ class Peer(cmd.Cmd):
             traceback.print_exc()
             return False
 
-    def assemble_file(self, file_hash, chunk_hashes, temp_dir, output_path):
+    def assemble_file(self, file_hash, chunk_hashes, temp_dir, output_path, file_name):
         try:
             num_chunks = len(chunk_hashes)
             with open(output_path, 'wb') as outfile:
@@ -617,7 +629,7 @@ class Peer(cmd.Cmd):
             file_hash_calculated, _ = self.compute_file_checksum(output_path)
             if file_hash_calculated != file_hash:
                 print("Arquivo final corrompido")
-                os.remove(output_path)
+                if os.path.exists(output_path): os.remove(output_path)
                 return False
                 
             return True
@@ -947,7 +959,7 @@ class Peer(cmd.Cmd):
         """Intercepta comandos quando em modo de chat."""
         if self.chat_target_user:
             stripped_line = line.strip().lower()
-            
+
             # Modo chat ativo
             if stripped_line == '/exit':
                 print(f"--- Saindo do modo de chat com {self.chat_target_user}. A conexão permanece aberta. ---")
