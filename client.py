@@ -55,6 +55,7 @@ class Peer(cmd.Cmd):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self.sock.connect((self.tracker_host, self.tracker_port))
+            print("Digite 'help' para visualizar todos os comandos disponíveis")
         except Exception as e:
             print(f"Falha ao conectar ao tracker: {e}")
             self.sock = None
@@ -363,6 +364,8 @@ class Peer(cmd.Cmd):
         # Obter disponibilidade de chunks entre peers
         chunk_availability = self.get_chunk_availability(file_hash, peers)
         max_workers = self.base_connections + math.floor(self.score // SCORE_DIVIDER)  # Ajustar número de workers dinamicamente (incentivo por score)
+        if max_workers > 15:
+            max_workers = 15
         print(f"Usando até {max_workers} conexões simultâneas (score: {self.score})")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -399,7 +402,6 @@ class Peer(cmd.Cmd):
         if self.assemble_file(file_hash, metadata['chunk_hashes'], temp_dir, download_path):
             download_time = time.time() - start_time
             file_size = os.path.getsize(download_path)
-            print(f"\nDownload concluído! {file_size/CHUNK_SIZE:.2f} MB em {download_time:.1f} segundos")
             print(f"Arquivo salvo em: {download_path}")
             # Adicionar arquivo completo aos compartilhados
             self.shared_files[file_hash] = {
@@ -868,6 +870,7 @@ class Peer(cmd.Cmd):
             self.close_chat_session(peer_name, announce=False)
 
     def do_list_online(self, arg):
+        """Lista os peers online"""
         request = {'method': 'list_online_users'}
         response = self.send_request(request)
         if response and response.get('status') == 'success':

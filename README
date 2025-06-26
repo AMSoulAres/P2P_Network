@@ -1,1 +1,8 @@
 # Trabalho final de Teleinformática e Redes 2 - Rede P2P com tracker centralizado
+Para rodar a aplicação basta iniciar o tracker com o comando:
+```python3 tracker.py```
+
+Após isso, iniciar os peers conforme desejado, rodando cada um em um terminal separado:
+```python3 client.py```
+
+Digite 'help' para visualizar todos os comandos disponíveis.
