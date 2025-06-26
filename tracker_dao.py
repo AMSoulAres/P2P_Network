@@ -231,3 +231,9 @@ class TrackerDao:
             (username,)
         )
         return cursor.fetchone() or (0, 0)
+    
+    def list_files(self):
+        cursor = self.conn.execute(
+            "SELECT file_hash, name, size, chunk_hashes FROM files"
+        )
+        return cursor.fetchall()

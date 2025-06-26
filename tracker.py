@@ -31,7 +31,7 @@ class Tracker:
     def hash_password(self, password, salt = None):
         # if salt is None:
         #     salt = os.urandom(16)
-        # implementar lógica de hash com salt dps (for fun)
+        # implementar lógica de hash com salt dps
         # salt deve ser armazenado junto com o hash, função para retorno do hash + salt deve ser implementada (verficar password no login) 
         # pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
 
@@ -84,6 +84,8 @@ class Tracker:
             return self.handle_get_peer_address(request)
         elif method == 'get_peer_chat_address':
             return self.handle_get_peer_chat_address(request)
+        elif method == 'list_files':
+            return self.handle_list_files()
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -256,6 +258,22 @@ class Tracker:
         if address:
             return {'status': 'success', 'ip': address[0], 'port': address[1]}
         return {'status': 'error', 'message': 'Usuário não encontrado'}
+    
+    def handle_list_files(self):
+        files = self.db.list_files()
+        if not files:
+            return {'status': 'error', 'message': 'Nenhum arquivo encontrado'}
+        
+        file_list = []
+        for file in files:
+            file_list.append({
+                'hash': file[0],
+                'name': file[1],
+                'size': file[2],
+                'chunks': json.loads(file[3]) if file[3] else []
+            })
+        
+        return {'status': 'success', 'files': file_list}
 
 if __name__ == '__main__':
     tracker = Tracker('localhost', 5000)

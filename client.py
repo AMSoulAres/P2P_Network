@@ -15,7 +15,7 @@ import traceback
 
 CHUNK_SIZE = 1024*1024  # 1MB, tamanho do chunk para download
 HEARTBEAT_INTERVAL = 60  # segundos
-SCORE_DIVIDER = 1000  # Divisor para calcular o score baseado no tempo online
+SCORE_DIVIDER = 1000  # Divisor para calcular o score
 
 class Peer(cmd.Cmd):
     prompt = 'peer> '
@@ -27,7 +27,7 @@ class Peer(cmd.Cmd):
         self.logged_in = False
         self.username = None
         self.chunks_served_since_last_heartbeat = 0
-        self.base_connections = 2  # Valor base
+        self.base_connections = 2 
         self.score = 0
 
         self.shared_files = {}  # arquivos completos compartilhados
@@ -77,7 +77,6 @@ class Peer(cmd.Cmd):
             # Resetar contadores
             self.chunks_serve_since_last_heartbeat = 0
 
-            # Atualizar configuração dinâmica
             if response and 'score' in response:
                 self.score = response['score']
 
@@ -278,6 +277,28 @@ class Peer(cmd.Cmd):
             self.sock.close()
         return True
 
+    def do_list_files(self, arg):
+        """Lista os arquivos disponíveis para download"""
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        request = {'method': 'list_files'}
+        response = self.send_request(request)
+        
+        if not response or response.get('status') != 'success':
+            print("Erro ao obter lista de arquivos:", response.get('message', 'Erro desconhecido'))
+            return
+        
+        files = response.get('files', [])
+        if not files:
+            print("Nenhum arquivo disponível")
+            return
+        
+        print("Arquivos disponíveis:")
+        for file in files:
+            print(f"{file['name']} (hash: {file['hash']}, tamanho: {file['size']/CHUNK_SIZE:.2f} MB)")
+
     def do_download(self, arg):
         """Baixa o arquivo especificado da rede P2P.
         
@@ -292,7 +313,8 @@ class Peer(cmd.Cmd):
             return
         file_hash = args[0]
         
-        start_time = time.time()
+        start_time = time.time() # Para medir o tempo de download
+
         # Obter lista de peers com o arquivo
         request = {'method': 'get_peers', 'file_hash': file_hash}
         response = self.send_request(request)
@@ -302,7 +324,7 @@ class Peer(cmd.Cmd):
             return
         
         peers = response.get('peers', [])
-        peers = [tuple(peer) for peer in peers if peer[2] != self.username]
+        peers = [tuple(peer) for peer in peers if peer[2] != self.username] # Excluir o próprio peer da lista de peers
 
         if not peers:
             print("Nenhum peer disponível com este arquivo")
@@ -341,7 +363,7 @@ class Peer(cmd.Cmd):
         # Obter disponibilidade de chunks entre peers
         chunk_availability = self.get_chunk_availability(file_hash, peers)
         max_workers = self.base_connections + math.floor(self.score // SCORE_DIVIDER)  # Ajustar número de workers dinamicamente (incentivo por score)
-        print(f"Usando até {max_workers} conexões simultâneas (score: {self.score:.1f})")
+        print(f"Usando até {max_workers} conexões simultâneas (score: {self.score})")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
@@ -400,7 +422,6 @@ class Peer(cmd.Cmd):
         success = os.path.exists(download_path)
         print(f"Download {'completo' if success else 'falhou'} - {file_size/CHUNK_SIZE:.2f} MB em {download_time:.2f} segundos ({speed/CHUNK_SIZE:.2f} MB/s)")
 
-    # Nova função para consultar peers e mapear disponibilidade de chunks
     def get_chunk_availability(self, file_hash, peers):
         """Consulta cada peer para saber quais chunks do arquivo ele possui.
            Retorna um dicionário {chunk_index: [lista_de_peers_com_chunk]}"""
@@ -437,7 +458,6 @@ class Peer(cmd.Cmd):
                         for chunk in chunks:
                             availability.setdefault(chunk, []).append(peer)
             except Exception as e:
-                print(e.with_traceback)
                 print(f"Erro ao consultar peer {peer_ip}:{peer_port} para chunks do arquivo {file_hash}")
                 continue
                 
@@ -501,7 +521,6 @@ class Peer(cmd.Cmd):
         attempts = 0
         tried_peers = set() #soft blacklist para evitar tentar o mesmo peer várias vezes
         while attempts < 2:
-            # print(f"Tentando baixar chunk {chunk_index} de {len(peers_with_chunk)} peers disponíveis (tentativa {attempts + 1})")
             # Selecionar peer não tentado e não blacklisted
             candidates = [peer for peer in peers_with_chunk if peer not in tried_peers]
             if not candidates:
@@ -523,7 +542,7 @@ class Peer(cmd.Cmd):
         chunk_file = os.path.join(temp_dir, f"{chunk_index}.chunk")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(50)  # Timeout de 10 segundos
+                s.settimeout(50)
                 s.connect((peer_ip, peer_port))
                 
                 # Solicitar chunk específico
@@ -552,7 +571,6 @@ class Peer(cmd.Cmd):
 
                 with open(chunk_file, 'wb') as f:
                     f.write(chunk_data)
-            # print(f"Chunk {chunk_index} baixado com sucesso de {peer_ip}:{peer_port}")
 
             # Atualizar estado do download para seed parcial
             self.download_lock.acquire()
@@ -599,6 +617,7 @@ class Peer(cmd.Cmd):
             file_hash_calculated, _ = self.compute_file_checksum(output_path)
             if file_hash_calculated != file_hash:
                 print("Arquivo final corrompido")
+                os.remove(output_path)
                 return False
                 
             return True
@@ -630,6 +649,7 @@ class Peer(cmd.Cmd):
 
         if action == 'list_chunks':
             file_hash = request.get('file_hash')
+
             # Retornar índices de chunks disponíveis neste peer
             chunks_available = []
             if file_hash in self.shared_files:
@@ -637,6 +657,7 @@ class Peer(cmd.Cmd):
                 print(f"Chunks disponíveis para {file_hash}: {len(chunks_available)}")
             elif file_hash in self.downloading_files:
                 chunks_available = sorted(self.downloading_files[file_hash]['chunks'])
+
             # Enviar resposta
             response = {'status': 'success', 'chunks': chunks_available}
             client_socket.send(json.dumps(response).encode() + b'\n')
@@ -926,7 +947,8 @@ class Peer(cmd.Cmd):
         """Intercepta comandos quando em modo de chat."""
         if self.chat_target_user:
             stripped_line = line.strip().lower()
-            # Estamos no modo chat
+            
+            # Modo chat ativo
             if stripped_line == '/exit':
                 print(f"--- Saindo do modo de chat com {self.chat_target_user}. A conexão permanece aberta. ---")
                 self.chat_target_user = None
