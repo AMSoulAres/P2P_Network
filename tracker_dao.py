@@ -56,6 +56,31 @@ class TrackerDao:
             )
         ''')
 
+        # Tabelas para sistema de salas de chat
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_rooms (
+                room_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                moderator TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                max_history INTEGER DEFAULT 100,
+                FOREIGN KEY (moderator) REFERENCES users(username)
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS room_members (
+                room_id TEXT,
+                username TEXT,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (room_id, username),
+                FOREIGN KEY (room_id) REFERENCES chat_rooms(room_id),
+                FOREIGN KEY (username) REFERENCES users(username)
+            )
+        ''')
+
+
+
         self.conn.commit()
 
     def register_user(self, username, password_hash, ip, port, chat_port):
@@ -237,3 +262,136 @@ class TrackerDao:
             "SELECT file_hash, name, size, chunk_hashes FROM files"
         )
         return cursor.fetchall()
+
+    # Métodos para gerenciamento de salas de chat
+    
+    def create_chat_room(self, room_id, name, moderator, max_history=100):
+        """Cria uma nova sala de chat"""
+        try:
+            self.conn.execute(
+                "INSERT INTO chat_rooms (room_id, name, moderator, max_history) VALUES (?, ?, ?, ?)",
+                (room_id, name, moderator, max_history)
+            )
+            # Adiciona o moderador como membro da sala
+            self.conn.execute(
+                "INSERT INTO room_members (room_id, username) VALUES (?, ?)",
+                (room_id, moderator)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_chat_room(self, room_id, requester):
+        """Remove uma sala de chat (apenas moderador)"""
+        try:
+            # Verificar se o usuário é o moderador
+            cursor = self.conn.execute(
+                "SELECT moderator FROM chat_rooms WHERE room_id = ?",
+                (room_id,)
+            )
+            result = cursor.fetchone()
+            if not result or result[0] != requester:
+                return False
+            
+            # Remover membros e sala
+            self.conn.execute("DELETE FROM room_members WHERE room_id = ?", (room_id,))
+            self.conn.execute("DELETE FROM chat_rooms WHERE room_id = ?", (room_id,))
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def add_member_to_room(self, room_id, username, requester):
+        """Adiciona um membro à sala (apenas moderador)"""
+        try:
+            # Verificar se o usuário é o moderador
+            cursor = self.conn.execute(
+                "SELECT moderator FROM chat_rooms WHERE room_id = ?",
+                (room_id,)
+            )
+            result = cursor.fetchone()
+            if not result or result[0] != requester:
+                return False
+            
+            self.conn.execute(
+                "INSERT OR IGNORE INTO room_members (room_id, username) VALUES (?, ?)",
+                (room_id, username)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def remove_member_from_room(self, room_id, username, requester):
+        """Remove um membro da sala (moderador ou o próprio usuário)"""
+        try:
+            # Verificar se o usuário é o moderador ou está removendo a si mesmo
+            cursor = self.conn.execute(
+                "SELECT moderator FROM chat_rooms WHERE room_id = ?",
+                (room_id,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                return False
+            
+            is_moderator = result[0] == requester
+            is_self_removal = username == requester
+            
+            if not (is_moderator or is_self_removal):
+                return False
+            
+            self.conn.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND username = ?",
+                (room_id, username)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def get_room_members(self, room_id, requester):
+        """Lista membros da sala (apenas para membros da sala)"""
+        # Verificar se o usuário é membro da sala
+        cursor = self.conn.execute(
+            "SELECT username FROM room_members WHERE room_id = ? AND username = ?",
+            (room_id, requester)
+        )
+        if not cursor.fetchone():
+            return None
+        
+        # Retornar lista de membros
+        cursor = self.conn.execute(
+            "SELECT username, joined_at FROM room_members WHERE room_id = ?",
+            (room_id,)
+        )
+        return cursor.fetchall()
+
+    def list_chat_rooms(self, username):
+        """Lista salas disponíveis para o usuário"""
+        cursor = self.conn.execute('''
+            SELECT cr.room_id, cr.name, cr.moderator, cr.created_at,
+                   CASE WHEN rm.username IS NOT NULL THEN 1 ELSE 0 END as is_member
+            FROM chat_rooms cr
+            LEFT JOIN room_members rm ON cr.room_id = rm.room_id AND rm.username = ?
+        ''', (username,))
+        return cursor.fetchall()
+
+    def is_room_member(self, room_id, username):
+        """Verifica se o usuário é membro da sala"""
+        cursor = self.conn.execute(
+            "SELECT 1 FROM room_members WHERE room_id = ? AND username = ?",
+            (room_id, username)
+        )
+        return cursor.fetchone() is not None
+
+    def get_room_info(self, room_id, username):
+        """Obtém informações da sala (apenas para membros)"""
+        if not self.is_room_member(room_id, username):
+            return None
+        
+        cursor = self.conn.execute(
+            "SELECT name, moderator, created_at, max_history FROM chat_rooms WHERE room_id = ?",
+            (room_id,)
+        )
+        return cursor.fetchone()

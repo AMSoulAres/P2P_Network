@@ -1,8 +1,97 @@
 # Trabalho final de Teleinformática e Redes 2 - Rede P2P com tracker centralizado
+
+## Sistema P2P com Chat e Salas Privadas
+
+Este sistema implementa uma rede P2P completa com:
+- Compartilhamento de arquivos com tracker centralizado
+- Chat direto 1:1 entre peers
+- **Salas de chat privadas com moderação e histórico persistente**
+
+## Como executar
+
 Para rodar a aplicação basta iniciar o tracker com o comando:
-```python3 tracker.py```
+```bash
+python3 tracker.py
+```
 
 Após isso, iniciar os peers conforme desejado, rodando cada um em um terminal separado:
-```python3 client.py```
+```bash
+python3 client.py
+```
 
 Digite 'help' para visualizar todos os comandos disponíveis.
+
+## Sistema de Salas de Chat
+
+### Funcionalidades Implementadas
+
+**Gerenciamento de Salas:**
+- `create_room <id> <nome> [max_historico]` - Cria nova sala (moderador)
+- `delete_room <id>` - Remove sala (apenas moderador)
+- `list_rooms` - Lista todas as salas disponíveis
+- `join_room <id>` - Ingressa numa sala
+- `leave_room <id>` - Sai de uma sala
+
+**Gerenciamento de Membros:**
+- `add_to_room <id> <usuario>` - Adiciona membro (apenas moderador)
+- `remove_from_room <id> <usuario>` - Remove membro (moderador ou próprio)
+- `room_members <id>` - Lista membros da sala
+
+**Comunicação em Sala:**
+- `enter_room <id>` - Entra no modo chat da sala
+- `<mensagem>` - Envia mensagem para todos os membros (modo broadcast)
+- `/exit` - Sai do modo chat (continua como membro)
+
+**Histórico Persistente:**
+- `room_history <id> [linhas]` - Mostra histórico de mensagens
+- Mensagens salvas automaticamente em `chat_logs/room_<id>.log`
+- Hash de integridade para cada mensagem
+- Sincronização automática entre peers
+
+### Características de Segurança
+
+- **Controle de Acesso:** Apenas membros autorizados podem participar
+- **Moderação:** Apenas o criador da sala pode adicionar/remover membros
+- **Integridade:** Cada mensagem tem hash SHA-256 para verificação
+- **Timestamps:** Ordenação cronológica garantida
+- **Prevenção de Duplicatas:** Sistema evita mensagens duplicadas
+
+### Exemplo de Uso
+
+```bash
+# Terminal 1 (Moderador)
+> register alice senha123
+> login alice senha123
+> create_room sala01 "Discussão Geral" 50
+> add_to_room sala01 bob
+> enter_room sala01
+sala(Discussão Geral)> Olá pessoal!
+
+# Terminal 2 (Membro)  
+> register bob senha456
+> login bob senha456
+> list_rooms
+> join_room sala01
+> enter_room sala01
+sala(Discussão Geral)> Oi Alice!
+```
+
+### Arquitetura
+
+O sistema é **híbrido**:
+- **Tracker centralizado** gerencia metadados das salas e histórico
+- **Comunicação P2P** direta entre membros para mensagens em tempo real
+- **Histórico replicado** localmente em cada peer para redundância
+- **Sincronização periódica** para garantir consistência
+
+### Arquivos de Log
+
+Mensagens são salvas em `chat_logs/room_<id>.log` no formato:
+```
+[timestamp] usuario: mensagem (hash: hash_integridade)
+```
+
+Para mais detalhes, execute:
+```bash
+python3 CHAT_ROOMS_GUIDE.py
+```

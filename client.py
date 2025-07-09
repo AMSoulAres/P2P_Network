@@ -49,6 +49,11 @@ class Peer(cmd.Cmd):
         self.chat_lock = threading.Lock()
         self.chat_target_user = None
 
+        # Sistema de salas de chat
+        from chat_room_manager import ChatRoomManager
+        self.room_manager = ChatRoomManager(self)
+        self.current_room = None
+
         self.connect_to_tracker()
 
     def connect_to_tracker(self):
@@ -797,8 +802,260 @@ class Peer(cmd.Cmd):
             return
         print(f"Sua pontuação atual é: {self.score:.1f}, permitindo ter até {self.base_connections + math.floor(self.score // SCORE_DIVIDER)} conexões simultâneas.")
         
+    # <<<< SALAS DE CHAT >>>>
+    
+    def do_create_room(self, arg):
+        """Cria uma nova sala de chat privada.
+        
+        Uso: create_room <room_id> <nome> [max_history]
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if len(args) < 2:
+            print("Uso: create_room <room_id> <nome> [max_history]")
+            return
+        
+        room_id = args[0]
+        name = ' '.join(args[1:-1]) if len(args) > 2 else args[1]
+        max_history = 100
+        
+        try:
+            if len(args) > 2 and args[-1].isdigit():
+                max_history = int(args[-1])
+                name = ' '.join(args[1:-1])
+        except ValueError:
+            pass
+        
+        success, message = self.room_manager.create_room(room_id, name, max_history)
+        print(message)
+    
+    def do_delete_room(self, arg):
+        """Remove uma sala de chat (apenas moderador).
+        
+        Uso: delete_room <room_id>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Uso: delete_room <room_id>")
+            return
+        
+        room_id = args[0]
+        success, message = self.room_manager.delete_room(room_id)
+        print(message)
+    
+    def do_add_to_room(self, arg):
+        """Adiciona um usuário à sala (apenas moderador).
+        
+        Uso: add_to_room <room_id> <username>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeira")
+            return
+        
+        args = arg.split()
+        if len(args) < 2:
+            print("Uso: add_to_room <room_id> <username>")
+            return
+        
+        room_id, username = args[0], args[1]
+        success, message = self.room_manager.add_member(room_id, username)
+        print(message)
+    
+    def do_remove_from_room(self, arg):
+        """Remove um usuário da sala (moderador ou próprio usuário).
+        
+        Uso: remove_from_room <room_id> <username>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if len(args) < 2:
+            print("Uso: remove_from_room <room_id> <username>")
+            return
+        
+        room_id, username = args[0], args[1]
+        success, message = self.room_manager.remove_member(room_id, username)
+        print(message)
+    
+    def do_list_rooms(self, arg):
+        """Lista todas as salas de chat disponíveis."""
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        success, rooms = self.room_manager.list_rooms()
+        if not success:
+            print(f"Erro: {rooms}")
+            return
+        
+        if not rooms:
+            print("Nenhuma sala encontrada")
+            return
+        
+        print("Salas disponíveis:")
+        for room in rooms:
+            status = "MEMBRO" if room['is_member'] else "DISPONÍVEL"
+            print(f"  {room['room_id']} - {room['name']} (Moderador: {room['moderator']}) [{status}]")
+    
+    def do_join_room(self, arg):
+        """Ingressa em uma sala de chat.
+        
+        Uso: join_room <room_id>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Uso: join_room <room_id>")
+            return
+        
+        room_id = args[0]
+        success, message = self.room_manager.join_room(room_id)
+        print(message)
+    
+    def do_leave_room(self, arg):
+        """Sai de uma sala de chat.
+        
+        Uso: leave_room <room_id>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Uso: leave_room <room_id>")
+            return
+        
+        room_id = args[0]
+        success, message = self.room_manager.leave_room(room_id)
+        print(message)
+        
+        if self.current_room == room_id:
+            self.current_room = None
+            self.prompt = 'peer> '
+    
+    def do_room_members(self, arg):
+        """Lista os membros de uma sala.
+        
+        Uso: room_members <room_id>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Uso: room_members <room_id>")
+            return
+        
+        room_id = args[0]
+        success, members = self.room_manager.get_room_members(room_id)
+        
+        if not success:
+            print(f"Erro: {members}")
+            return
+        
+        if not members:
+            print("Nenhum membro encontrado")
+            return
+        
+        print(f"Membros da sala {room_id}:")
+        for member in members:
+            print(f"  {member['username']} (desde {member['joined_at']})")
+    
+    def do_enter_room(self, arg):
+        """Entra no modo de chat da sala.
+        
+        Uso: enter_room <room_id>
+        """
+        if not self.logged_in:
+            print("Autentique-se primeiro")
+            return
+        
+        args = arg.split()
+        if not args:
+            print("Uso: enter_room <room_id>")
+            return
+        
+        room_id = args[0]
+        
+        # Verificar se é membro da sala
+        if room_id not in self.room_manager.active_rooms:
+            print("Você não é membro desta sala. Use 'join_room' primeiro.")
+            return
+        
+        self.current_room = room_id
+        room_name = self.room_manager.active_rooms[room_id]['name']
+        self.prompt = f'sala({room_name})> '
+        
+        print(f"--- Entrando na sala {room_name}. Digite '/exit' para sair do modo sala. ---")
+        
+        # Mostrar histórico recente
+        history = self.room_manager.get_room_log(room_id, 10)
+        if history:
+            print("Histórico recente:")
+            for line in history:
+                print(f"  {line.strip()}")
+    
+    def do_room_history(self, arg):
+        """Mostra histórico de mensagens da sala ativa ou especificada
+        
+        Uso: room_history [room_id] [limite]
+        """
+        if not self.logged_in:
+            print("Você precisa estar logado.")
+            return
+        
+        args = arg.split()
+        room_id = args[0] if args else self.current_room
+        limit = int(args[1]) if len(args) > 1 else 20
+        
+        if not room_id:
+            print("Especifique um room_id ou entre em uma sala primeiro.")
+            return
+        
+        try:
+            if len(args) > 1:
+                limit = int(args[1])
+        except ValueError:
+            print("Limite deve ser um número")
+            return
+        
+        success, message = self.room_manager.show_room_history(room_id, limit)
+        if not success:
+            print(f"Erro: {message}")
+        
+    def do_sync_room(self, arg):
+        """Força sincronização de mensagens com outros peers
+        
+        Uso: sync_room [room_id]
+        """
+        if not self.logged_in:
+            print("Você precisa estar logado.")
+            return
+        
+        room_id = arg.strip() if arg.strip() else self.current_room
+        
+        if not room_id:
+            print("Especifique um room_id ou entre em uma sala primeiro.")
+            return
+        
+        success, message = self.room_manager.sync_room_with_peers(room_id)
+        print(message)
+    
     # <<<< CHAT >>>>
-
     def start_chat_server(self):
         """Inicia o servidor de chat para aceitar conexões de outros peers."""
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -825,8 +1082,9 @@ class Peer(cmd.Cmd):
                     message_str, buffer = buffer.split('\n', 1)
                     try:
                         msg_obj = json.loads(message_str)
+                        
                         if msg_obj.get('action') == 'chat_message':
-                            # Na primeira mensagem, registra a conexão
+                            # Chat direto 1:1
                             if peer_name is None:
                                 peer_name = msg_obj.get('from')
                                 if peer_name:
@@ -835,6 +1093,11 @@ class Peer(cmd.Cmd):
                                     print(f"\n--- Chat iniciado por {peer_name}. Use 'chat {peer_name}' para responder. ---")
                             
                             print(f"\n[CHAT de {peer_name}]: {msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
+                        
+                        elif msg_obj.get('action') == 'room_message':
+                            # Mensagem de sala
+                            self.room_manager.process_room_message(msg_obj)
+                            
                     except json.JSONDecodeError:
                         pass
         except (ConnectionResetError, BrokenPipeError):
@@ -947,8 +1210,32 @@ class Peer(cmd.Cmd):
         self.close_chat_session(target_user)
 
     def precmd(self, line):
-        """Intercepta comandos quando em modo de chat."""
-        if self.chat_target_user:
+        """Intercepta comandos quando em modo de chat ou sala."""
+        # Modo sala de chat ativo
+        if self.current_room:
+            stripped_line = line.strip().lower()
+            
+            if stripped_line == '/exit':
+                room_name = self.room_manager.active_rooms[self.current_room]['name']
+                print(f"--- Saindo do modo de sala {room_name}. Você continua como membro. ---")
+                self.current_room = None
+                self.prompt = 'peer> '
+                self.lastcmd = ''
+                return ''
+            
+            # Qualquer outra coisa é uma mensagem para a sala
+            message = line
+            if not message:
+                return ''
+            
+            success, msg = self.room_manager.send_message(self.current_room, message)
+            if not success:
+                print(f"Erro ao enviar mensagem: {msg}")
+            
+            return ''
+        
+        # Modo chat 1:1 ativo
+        elif self.chat_target_user:
             stripped_line = line.strip().lower()
             
             # Modo chat ativo

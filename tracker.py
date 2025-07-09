@@ -86,6 +86,20 @@ class Tracker:
             return self.handle_get_peer_chat_address(request)
         elif method == 'list_files':
             return self.handle_list_files()
+        elif method == 'create_room':
+            return self.handle_create_room(request, current_username)
+        elif method == 'delete_room':
+            return self.handle_delete_room(request, current_username)
+        elif method == 'add_member':
+            return self.handle_add_member(request, current_username)
+        elif method == 'remove_member':
+            return self.handle_remove_member(request, current_username)
+        elif method == 'list_rooms':
+            return self.handle_list_rooms(request, current_username)
+        elif method == 'get_room_members':
+            return self.handle_get_room_members(request, current_username)
+        elif method == 'get_room_info':
+            return self.handle_get_room_info(request, current_username)
         else:
             return {'status': 'error', 'message': 'Ação inválida'}
 
@@ -275,6 +289,158 @@ class Tracker:
         
         return {'status': 'success', 'files': file_list}
 
-if __name__ == '__main__':
-    tracker = Tracker('localhost', 5000)
-    tracker.start()
+    # Handlers para salas de chat
+    
+    def handle_create_room(self, request, username):
+        """Cria uma nova sala de chat"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        name = request.get('name')
+        max_history = request.get('max_history', 100)
+        
+        if not room_id or not name:
+            return {'status': 'error', 'message': 'ID e nome da sala são obrigatórios'}
+        
+        if self.db.create_chat_room(room_id, name, username, max_history):
+            return {'status': 'success', 'message': f'Sala {name} criada com sucesso'}
+        else:
+            return {'status': 'error', 'message': 'Sala já existe ou erro interno'}
+
+    def handle_delete_room(self, request, username):
+        """Remove uma sala de chat"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        if not room_id:
+            return {'status': 'error', 'message': 'ID da sala é obrigatório'}
+        
+        if self.db.delete_chat_room(room_id, username):
+            return {'status': 'success', 'message': f'Sala removida com sucesso'}
+        else:
+            return {'status': 'error', 'message': 'Apenas o moderador pode remover a sala'}
+
+    def handle_add_member(self, request, username):
+        """Adiciona membro à sala"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        member_username = request.get('username')
+        
+        if not room_id or not member_username:
+            return {'status': 'error', 'message': 'ID da sala e nome do usuário são obrigatórios'}
+        
+        if self.db.add_member_to_room(room_id, member_username, username):
+            return {'status': 'success', 'message': f'Usuário {member_username} adicionado à sala'}
+        else:
+            return {'status': 'error', 'message': 'Apenas o moderador pode adicionar membros'}
+
+    def handle_remove_member(self, request, username):
+        """Remove membro da sala"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        member_username = request.get('username')
+        
+        if not room_id or not member_username:
+            return {'status': 'error', 'message': 'ID da sala e nome do usuário são obrigatórios'}
+        
+        if self.db.remove_member_from_room(room_id, member_username, username):
+            return {'status': 'success', 'message': f'Usuário {member_username} removido da sala'}
+        else:
+            return {'status': 'error', 'message': 'Apenas o moderador ou o próprio usuário pode sair da sala'}
+
+    def handle_list_rooms(self, request, username):
+        """Lista salas disponíveis"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        rooms = self.db.list_chat_rooms(username)
+        room_list = []
+        for room in rooms:
+            room_list.append({
+                'room_id': room[0],
+                'name': room[1],
+                'moderator': room[2],
+                'created_at': room[3],
+                'is_member': bool(room[4])
+            })
+        
+        return {'status': 'success', 'rooms': room_list}
+
+    def handle_get_room_members(self, request, username):
+        """Lista membros da sala"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        if not room_id:
+            return {'status': 'error', 'message': 'ID da sala é obrigatório'}
+        
+        members = self.db.get_room_members(room_id, username)
+        if members is None:
+            return {'status': 'error', 'message': 'Sala não encontrada ou acesso negado'}
+        
+        member_list = []
+        for member in members:
+            member_list.append({
+                'username': member[0],
+                'joined_at': member[1]
+            })
+        
+        return {'status': 'success', 'members': member_list}
+
+    def handle_get_room_info(self, request, username):
+        """Obtém informações da sala"""
+        if not username:
+            return {'status': 'error', 'message': 'Usuário não autenticado'}
+        
+        is_active, msg = self.verify_active_peer(username)
+        if not is_active:
+            return {'status': 'error', 'message': msg}
+        
+        room_id = request.get('room_id')
+        if not room_id:
+            return {'status': 'error', 'message': 'ID da sala é obrigatório'}
+        
+        info = self.db.get_room_info(room_id, username)
+        if info is None:
+            return {'status': 'error', 'message': 'Sala não encontrada ou acesso negado'}
+        
+        return {
+            'status': 'success',
+            'room_info': {
+                'name': info[0],
+                'moderator': info[1],
+                'created_at': info[2],
+                'max_history': info[3]
+            }
+        }
