@@ -1,6 +1,5 @@
 import cmd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 import math
 import os
 import random
@@ -12,6 +11,7 @@ from getpass import getpass
 import threading
 import time
 import traceback
+import datetime
 
 CHUNK_SIZE = 1024*1024  # 1MB, tamanho do chunk para download
 HEARTBEAT_INTERVAL = 60  # segundos
@@ -35,6 +35,10 @@ class Peer(cmd.Cmd):
         self.download_dir = "downloads"
         os.makedirs(self.download_dir, exist_ok=True)
 
+        # Diretório para logs de chat
+        self.log_dir = "chat_logs"
+        os.makedirs(self.log_dir, exist_ok=True)
+
         # Iniciar servidor para receber solicitações de chunks
         self.peer_port = random.randint(50000, 60000) # Porta aleatória para evitar conflitos em localhost
         threading.Thread(target=self.start_chunk_server, daemon=True).start()
@@ -45,9 +49,14 @@ class Peer(cmd.Cmd):
 
         self.download_lock = threading.Lock()  # Lock para sincronizar dados de download
         
-        self.chat_connections = {}
+        # Estruturas de chat para suportar salas
         self.chat_lock = threading.Lock()
-        self.chat_target_user = None
+        self.chat_target_user = None # Para chat individual
+        self.direct_chat_connections = {} 
+
+        # Estruturas para salas de chat
+        self.chat_rooms = {}
+        self.moderated_rooms = {}
 
         self.connect_to_tracker()
 
@@ -143,7 +152,7 @@ class Peer(cmd.Cmd):
             username, password = args
 
         request = {
-            'method': 'register',
+            'method': 'room_egister',
             'username': username,
             'password': password,
             # 'ip': socket.gethostbyname(socket.gethostname()),
@@ -808,42 +817,94 @@ class Peer(cmd.Cmd):
         
         while True:
             client_socket, addr = server_socket.accept()
-            threading.Thread(target=self.handle_chat_session, args=(client_socket,)).start()
+            # A thread agora lida com vários tipos de ações de chat
+            threading.Thread(target=self.handle_p2p_chat_request, args=(client_socket,)).start()
 
-    def handle_chat_session(self, sock):
-        """Lida com uma sessão de chat recebida, ouvindo mensagens em loop."""
+    def handle_p2p_chat_request(self, sock):
+        """MODIFIED: Lida com todas as solicitações P2P no socket de chat."""
         buffer = ""
+        try:
+            first_message_data = sock.recv(4096).decode()
+            if not first_message_data: return
+            
+            if '\n' in first_message_data:
+                message_str, buffer = first_message_data.split('\n', 1)
+                msg_obj = json.loads(message_str)
+                action = msg_obj.get('action')
+
+                if action == 'direct_chat_message':
+                    self.handle_direct_chat_session(sock, msg_obj, buffer)
+                elif action == 'join_room':
+                    self.handle_room_join(sock, msg_obj)
+                elif action == 'room_message':
+                    self.handle_room_message(sock, msg_obj) # Moderador recebe mensagem
+                else:
+                    sock.close()
+            else:
+                sock.close()
+
+        except (ConnectionResetError, BrokenPipeError, json.JSONDecodeError):
+            pass # A desconexão será tratada em outro lugar
+        # Não fechamos o socket aqui, pois ele pode ser mantido vivo para a sala
+
+    def handle_direct_chat_session(self, sock, first_msg_obj, initial_buffer):
+        """
+        (RECEBEDOR) Lida com uma sessão de chat 1-para-1, ouvindo mensagens em loop.
+        Esta função é chamada quando o primeiro 'direct_chat_message' é recebido.
+        """
+        buffer = initial_buffer
         peer_name = None
         try:
+            # O primeiro objeto de mensagem já foi lido e passado como argumento
+            peer_name = first_msg_obj.get('from')
+            if not peer_name:
+                sock.close()
+                return
+
+            # Armazena a conexão para futuras respostas
+            with self.chat_lock:
+                self.direct_chat_connections[peer_name] = sock
+
+            # Exibe a primeira mensagem e notifica o usuário
+            print(f"\n--- Chat iniciado por {peer_name}. Use 'chat {peer_name}' para responder. ---")
+            print(f"\n[CHAT de {peer_name}]: {first_msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
+
+            # Loop para receber mensagens subsequentes da mesma conexão
             while True:
                 data = sock.recv(4096).decode()
                 if not data:
                     break  # Conexão fechada pelo outro peer
-                
+
                 buffer += data
                 while '\n' in buffer:
                     message_str, buffer = buffer.split('\n', 1)
                     try:
                         msg_obj = json.loads(message_str)
-                        if msg_obj.get('action') == 'chat_message':
-                            # Na primeira mensagem, registra a conexão
-                            if peer_name is None:
-                                peer_name = msg_obj.get('from')
-                                if peer_name:
-                                    with self.chat_lock:
-                                        self.chat_connections[peer_name] = sock
-                                    print(f"\n--- Chat iniciado por {peer_name}. Use 'chat {peer_name}' para responder. ---")
-                            
+                        if msg_obj.get('action') == 'direct_chat_message':
                             print(f"\n[CHAT de {peer_name}]: {msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
                     except json.JSONDecodeError:
+                        # Ignora dados malformados
                         pass
         except (ConnectionResetError, BrokenPipeError):
+            # A conexão foi perdida
             pass
         finally:
+            # Limpa a sessão quando a conexão é encerrada
             if peer_name:
                 print(f"\n[INFO] Conexão com {peer_name} encerrada.")
-                self.close_chat_session(peer_name, announce=False)
-            else:
+                self.close_direct_chat_session(peer_name)
+
+    def close_direct_chat_session(self, username):
+        """Fecha e limpa uma sessão de chat 1-para-1 com um usuário específico."""
+        with self.chat_lock:
+            if username in self.direct_chat_connections:
+                sock = self.direct_chat_connections.pop(username)
+                try:
+                    # Tenta um encerramento gracioso
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    # O socket já pode estar fechado
+                    pass
                 sock.close()
 
     def chat_receiver_loop(self, sock, peer_name):
@@ -899,7 +960,7 @@ class Peer(cmd.Cmd):
 
         # Verifica ou cria a conexão
         with self.chat_lock:
-            if target_user not in self.chat_connections:
+            if target_user not in self.direct_chat_connections:
                 request = {'method': 'get_peer_chat_address', 'username': target_user}
                 response = self.send_request(request)
                 
@@ -911,7 +972,7 @@ class Peer(cmd.Cmd):
                 try:
                     chat_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     chat_sock.connect((ip, port))
-                    self.chat_connections[target_user] = chat_sock
+                    self.direct_chat_connections[target_user] = chat_sock
                     threading.Thread(target=self.chat_receiver_loop, args=(chat_sock, target_user), daemon=True).start()
                 except Exception as e:
                     print(f"Erro ao iniciar chat com {target_user}: {e}")
@@ -922,19 +983,6 @@ class Peer(cmd.Cmd):
             print(f"--- Entrou no modo chat com {target_user}. Digite '/exit' para sair. ---")
         self.chat_target_user = target_user
         self.prompt = f'chat({target_user})> '
-        
-    def close_chat_session(self, username, announce=True):
-        """Fecha e limpa uma sessão de chat com um usuário específico."""
-        with self.chat_lock:
-            if username in self.chat_connections:
-                sock = self.chat_connections.pop(username)
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass # Socket já pode estar fechado
-                sock.close()
-                if announce:
-                    print(f"Sessão de chat com {username} foi encerrada.")
 
     def do_close_chat(self, arg):
         """Encerra uma sessão de chat ativa.
@@ -944,7 +992,7 @@ class Peer(cmd.Cmd):
             print("Uso: close_chat <username>")
             return
         target_user = args[0]
-        self.close_chat_session(target_user)
+        self.close_direct_chat_session(target_user)
 
     def precmd(self, line):
         """Intercepta comandos quando em modo de chat."""
@@ -974,22 +1022,291 @@ class Peer(cmd.Cmd):
 
             try:
                 with self.chat_lock:
-                    chat_sock = self.chat_connections[self.chat_target_user]
+                     chat_sock = self.direct_chat_connections[self.chat_target_user]
                 
                 chat_sock.sendall(json.dumps({
-                    'action': 'chat_message',
+                    'action': 'direct_chat_message', # Ação correta
                     'from': self.username,
                     'message': message
                 }).encode() + b'\n')
             except (KeyError, BrokenPipeError, ConnectionResetError):
                 print(f"A conexão com {self.chat_target_user} foi perdida. Saindo do modo chat.")
-                self.close_chat_session(self.chat_target_user, announce=False)
+                self.close_direct_chat_session(self.chat_target_user) # Usa a função de limpeza correta
                 self.chat_target_user = None
                 self.prompt = 'peer> '
-            
+
             return '' # Impede que o cmd processe a mensagem como um comando
         else:
             return line # Modo normal, processa o comando como de costume
+        
+
+    def do_rcreate(self, arg):
+        """Cria uma nova sala de chat. Você será o moderador. Uso: rcreate <nome_da_sala>"""
+        if not self.logged_in:
+            print("Autentique-se primeiro.")
+            return
+
+        if not arg:
+            print("Uso: rcreate <nome_da_sala>")
+            return
+        
+        room_name = arg.strip()
+        response = self.send_request({'method': 'room_create', 'room_name': room_name})
+        
+        if response and response.get('status') == 'success':
+            # Inicializar estado local de moderação
+            with self.chat_lock:
+                self.moderated_rooms[room_name] = {
+                    'members': {}, # Soquetes dos membros conectados
+                    'history': []
+                }
+                self.chat_rooms[room_name] = {
+                    'moderator': self.username,
+                    'socket': None, # O moderador não tem socket para si mesmo
+                    'history': []
+                }
+            print(response.get('message'))
+        else:
+            print(f"Erro: {response.get('message', 'Falha ao criar sala.')}")
+
+    def do_rinvite(self, arg):
+        """Convida um usuário para uma sala que você modera. Uso: rinvite <nome_da_sala> <usuario>"""
+        if not self.logged_in: print("Autentique-se primeiro."); return
+        args = arg.split()
+        if len(args) != 2: print("Uso: rinvite <nome_da_sala> <usuario>"); return
+        room_name, target_user = args
+        
+        response = self.send_request({'method': 'room_invite', 'room_name': room_name, 'target_user': target_user})
+        print(response.get('message', 'Erro desconhecido.'))
+        
+    def do_rlist(self, arg):
+        """Lista todas as salas de chat disponíveis na rede."""
+        response = self.send_request({'method': 'room_list'})
+        if response and response.get('status') == 'success':
+            rooms = response.get('rooms', [])
+            if not rooms: print("Nenhuma sala de chat encontrada."); return
+            print("Salas de chat disponíveis:")
+            for room in rooms:
+                print(f"- {room['name']} (Moderador: {room['moderator']})")
+        else:
+            print("Erro ao listar salas.")
+
+    def do_rjoin(self, arg):
+        """Entra em uma sala de chat para a qual você foi convidado. Uso: rjoin <nome_da_sala>"""
+        if not self.logged_in: print("Autentique-se primeiro."); return
+        if not arg: print("Uso: rjoin <nome_da_sala>"); return
+        room_name = arg.strip()
+
+        if room_name in self.chat_rooms: print("Você já está nesta sala."); return
+
+        # 1. Obter detalhes da sala, incluindo o moderador
+        details_resp = self.send_request({'method': 'room_details', 'room_name': room_name})
+        if not (details_resp and details_resp.get('status') == 'success'):
+            print(f"Erro ao entrar na sala: {details_resp.get('message', 'Você não tem permissão ou a sala não existe.')}")
+            return
+        
+        moderator = details_resp['details']['moderator']
+        
+        # 2. Obter endereço do moderador
+        addr_resp = self.send_request({'method': 'get_peer_chat_address', 'username': moderator})
+        if not (addr_resp and addr_resp.get('status') == 'success'):
+            print(f"Não foi possível encontrar o moderador '{moderator}'. Tente novamente mais tarde."); return
+        
+        mod_ip, mod_port = addr_resp['ip'], addr_resp['port']
+
+        try:
+            # 3. Conectar-se ao moderador
+            mod_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            mod_sock.connect((mod_ip, mod_port))
+            
+            # 4. Enviar solicitação de join P2P
+            join_req = {'action': 'join_room', 'room_name': room_name, 'from': self.username}
+            mod_sock.sendall(json.dumps(join_req).encode() + b'\n')
+            
+            # 5. Inicializar estado local e thread de escuta
+            with self.chat_lock:
+                self.chat_rooms[room_name] = {'moderator': moderator, 'socket': mod_sock, 'history': []}
+            
+            threading.Thread(target=self.room_receiver_loop, args=(room_name, mod_sock), daemon=True).start()
+            print(f"Conectado à sala '{room_name}'. Aguardando sincronização do histórico...")
+        except Exception as e:
+            print(f"Falha ao conectar ao moderador da sala: {e}")
+
+    def do_rsay(self, arg):
+        """Envia uma mensagem para uma sala. Uso: rsay <nome_da_sala> <mensagem>"""
+        if not self.logged_in: print("Autentique-se primeiro."); return
+        
+        parts = arg.split(' ', 1)
+        if len(parts) != 2: print("Uso: rsay <nome_da_sala> <mensagem>"); return
+        room_name, content = parts
+        
+        with self.chat_lock:
+            if room_name not in self.chat_rooms:
+                print("Você não está nesta sala. Use 'rjoin' para entrar."); return
+            
+            room_info = self.chat_rooms[room_name]
+            # Se for o moderador, a lógica é de broadcast
+            if self.username == room_info['moderator']:
+                full_message = self.create_message_obj(room_name, content)
+                self.add_to_history_and_save(room_name, full_message)
+                self.broadcast_message(room_name, {'action': 'room_message', 'message': full_message}, exclude_user=self.username)
+                print(f"[VOCÊ -> {room_name}]: {content}")
+            # Se for membro, envia para o moderador
+            else:
+                mod_sock = room_info.get('socket')
+                if not mod_sock: print("Conexão com o moderador perdida."); return
+                
+                message_payload = {'from': self.username, 'content': content}
+                p2p_req = {'action': 'room_message', 'room_name': room_name, 'message': message_payload}
+                try:
+                    mod_sock.sendall(json.dumps(p2p_req).encode() + b'\n')
+                except (BrokenPipeError, ConnectionResetError):
+                    print("Erro: A conexão com o moderador foi perdida.")
+                    self.cleanup_room_connection(room_name)
+
+    # --- LÓGICA P2P PARA GERENCIAMENTO DE SALA ---
+
+    def handle_room_join(self, sock, msg_obj):
+        """(MODERADOR) Lida com um novo membro se juntando à sala."""
+        room_name = msg_obj.get('room_name')
+        requesting_user = msg_obj.get('from')
+
+        with self.chat_lock:
+            if room_name not in self.moderated_rooms:
+                sock.close(); return
+
+            # Adicionar membro à lista de conexões ativas
+            self.moderated_rooms[room_name]['members'][requesting_user] = sock
+            print(f"\n[SALA {room_name}] '{requesting_user}' entrou.")
+
+            # Enviar histórico
+            history_log = self.moderated_rooms[room_name]['history']
+            history_msg = {'action': 'history_sync', 'room_name': room_name, 'messages': history_log}
+            sock.sendall(json.dumps(history_msg).encode() + b'\n')
+            
+            # Notificar outros membros
+            notification = {'action': 'notification', 'room_name': room_name, 'message': f"'{requesting_user}' entrou na sala."}
+            self.broadcast_message(room_name, notification, exclude_user=requesting_user)
+            
+    def handle_room_message(self, sock, msg_obj):
+        """(MODERADOR) Recebe e faz broadcast de uma mensagem de um membro."""
+        room_name = msg_obj.get('room_name')
+        original_message = msg_obj.get('message')
+
+        with self.chat_lock:
+            if room_name not in self.moderated_rooms: return
+
+            # Enriquecer mensagem, adicionar ao histórico e fazer broadcast
+            full_message = self.create_message_obj(room_name, original_message['content'], sender=original_message['from'])
+            self.add_to_history_and_save(room_name, full_message)
+            self.broadcast_message(room_name, {'action': 'room_message', 'message': full_message}, exclude_user=None)
+
+    def room_receiver_loop(self, room_name, sock):
+        """(MEMBRO) Ouve por mensagens do moderador em uma thread dedicada."""
+        buffer = ""
+        while room_name in self.chat_rooms:
+            try:
+                data = sock.recv(4096).decode()
+                if not data: break
+                
+                buffer += data
+                while '\n' in buffer:
+                    message_str, buffer = buffer.split('\n', 1)
+                    msg_obj = json.loads(message_str)
+                    action = msg_obj.get('action')
+
+                    if action == 'history_sync':
+                        messages = msg_obj.get('messages', [])
+                        with self.chat_lock:
+                            self.chat_rooms[room_name]['history'].extend(messages)
+                        print(f"\n--- Histórico da sala '{room_name}' sincronizado ({len(messages)} mensagens). ---")
+                        for msg in messages:
+                            print(f"[{msg['timestamp']}]<{msg['sender']}> {msg['content']}")
+                            self.save_log_to_disk(room_name, msg)
+
+                    elif action == 'room_message':
+                        message = msg_obj.get('message')
+                        # Evitar duplicatas
+                        with self.chat_lock:
+                            if not any(m['id'] == message['id'] for m in self.chat_rooms[room_name]['history']):
+                                self.chat_rooms[room_name]['history'].append(message)
+                                self.save_log_to_disk(room_name, message)
+                                if message['sender'] != self.username:
+                                    print(f"\n[SALA:{room_name}]<{message['sender']}> {message['content']}\n{self.prompt}", end='', flush=True)
+
+                    elif action == 'notification':
+                        print(f"\n[NOTIFICAÇÃO:{room_name}] {msg_obj.get('message')}\n{self.prompt}", end='', flush=True)
+
+            except (ConnectionResetError, BrokenPipeError, json.JSONDecodeError):
+                break
+        
+        print(f"\nConexão com a sala '{room_name}' perdida.")
+        self.cleanup_room_connection(room_name)
+
+    # --- FUNÇÕES AUXILIARES ---
+
+    def create_message_obj(self, room_name, content, sender=None):
+        if sender is None: sender = self.username
+        return {
+            'id': hashlib.sha256(f"{time.time()}{sender}{content}".encode()).hexdigest(),
+            'room': room_name,
+            'sender': sender,
+            'timestamp': datetime.now().isoformat(),
+            'content': content
+        }
+
+    def add_to_history_and_save(self, room_name, message):
+        """(MODERADOR) Adiciona mensagem ao histórico e salva no disco."""
+        with self.chat_lock:
+            # Lógica para limitar tamanho do histórico (ex: 100 mensagens)
+            history = self.moderated_rooms[room_name]['history']
+            history.append(message)
+            if len(history) > 100:
+                self.moderated_rooms[room_name]['history'] = history[-100:]
+            self.save_log_to_disk(room_name, message)
+
+    def save_log_to_disk(self, room_name, message):
+        log_file = os.path.join(self.log_dir, f"{room_name}.jsonlog")
+        try:
+            with open(log_file, 'a') as f:
+                f.write(json.dumps(message) + '\n')
+        except Exception as e:
+            print(f"Erro ao salvar log: {e}")
+            
+    def broadcast_message(self, room_name, payload, exclude_user):
+        """(MODERADOR) Envia uma mensagem para todos os membros conectados."""
+        disconnected_users = []
+        with self.chat_lock:
+            if room_name not in self.moderated_rooms: return
+            for user, sock in self.moderated_rooms[room_name]['members'].items():
+                if user != exclude_user:
+                    try:
+                        sock.sendall(json.dumps(payload).encode() + b'\n')
+                    except (BrokenPipeError, ConnectionResetError):
+                        disconnected_users.append(user)
+        # Limpar usuários desconectados
+        for user in disconnected_users:
+            self.cleanup_moderated_member(room_name, user)
+
+    def cleanup_room_connection(self, room_name):
+        """(MEMBRO) Limpa o estado local de uma sala quando a conexão é perdida."""
+        with self.chat_lock:
+            if room_name in self.chat_rooms:
+                sock = self.chat_rooms[room_name].get('socket')
+                if sock: sock.close()
+                del self.chat_rooms[room_name]
+    
+    def cleanup_moderated_member(self, room_name, username):
+        """(MODERADOR) Limpa um membro desconectado da sala que modera."""
+        with self.chat_lock:
+            if room_name in self.moderated_rooms:
+                if username in self.moderated_rooms[room_name]['members']:
+                    del self.moderated_rooms[room_name]['members'][username]
+                    print(f"\n[SALA {room_name}] '{username}' desconectou-se.")
+                    # Notificar outros sobre a saída
+                    notification = {'action': 'notification', 'room_name': room_name, 'message': f"'{username}' saiu da sala."}
+                    self.broadcast_message(room_name, notification, exclude_user=None)
+
 if __name__ == '__main__':
     cli = Peer('localhost', 5000)
     cli.cmdloop()
