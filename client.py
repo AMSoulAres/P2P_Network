@@ -904,7 +904,7 @@ class Peer(cmd.Cmd):
             print(f"  {room['room_id']} (Moderador: {room['moderator']}) [{status}]")
     
     def do_join_room(self, arg):
-        """Ingressa em uma sala de chat.
+        """Entra como membro e sincroniza mensagens em uma sala de chat.
         
         Uso: join_room <room_id>
         """
@@ -1196,14 +1196,6 @@ class Peer(cmd.Cmd):
                 self.prompt = 'peer> '
                 self.lastcmd = '' # Impede que uma linha vazia reative o chat
                 return ''  # Impede que o cmd processe '/exit' como um comando
-
-            if stripped_line == '/close':
-                print(f"--- Encerrando a conexão com {self.chat_target_user} e saindo do modo de chat. ---")
-                self.close_chat_session(self.chat_target_user)
-                self.chat_target_user = None
-                self.prompt = 'peer> '
-                self.lastcmd = '' # Impede que uma linha vazia reative o chat (bug do cmd)
-                return '' # Impede que o cmd processe '/close' como um comando
 
             # Qualquer outra coisa digitada é uma mensagem de chat
             message = line

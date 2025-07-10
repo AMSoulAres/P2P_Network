@@ -8,40 +8,34 @@ from datetime import datetime
 import socket
 
 class RoomMessageManager:
-    """
-    Gerencia mensagens de sala de chat com armazenamento distribuído.
-    """
-    
     def __init__(self, peer):
         self.peer = peer
         self.messages_dir = "room_messages"
         self.sync_lock = threading.Lock()
-        self._syncing_rooms = set()  # Controle de sincronização concorrente
+        self._syncing_rooms = set()  # Evita sincronizar a mesma sala ao mesmo tempo
         
         os.makedirs(self.messages_dir, exist_ok=True)
         
         # Cache de mensagens em memória para salas ativas
-        self.message_cache = {}  # room_id -> {"messages": [], "last_sync": timestamp}
+        self.message_cache = {}  # {"messages": [], "last_sync": timestamp}
         
-        # Thread para sincronização periódica
+         # Thread que fica sincronizando com outros peers de vez em quando
         self.sync_thread = threading.Thread(target=self.sync_messages_periodically, daemon=True)
         self.sync_thread.start()
     
     def get_room_file_path(self, room_id):
-        """Retorna o caminho do arquivo de mensagens da sala"""
+        """Caminho do arquivo onde ficam as mensagens dessa sala."""
         return os.path.join(self.messages_dir, f"room_{room_id}.json")
     
     def create_message_hash(self, room_id, sender, message, timestamp):
-        """Cria hash único para a mensagem"""
+        """Gera um hash pra identificar a mensagem e evitar duplicatas."""
         message_data = f"{room_id}:{sender}:{message}:{timestamp}"
         return hashlib.sha256(message_data.encode()).hexdigest()
     
     def save_message(self, room_id, sender, message, room_info = None):
         """
-        Salva uma mensagem na sala.
-        
-        Returns:
-            (sucesso, hash_da_mensagem, mensagem_de_erro)
+        Salva uma nova mensagem no histórico da sala.
+        Retorna (True, hash, '') se deu certo, ou (False, '', erro) se deu ruim.
         """
         timestamp = datetime.now().isoformat()
         message_hash = self.create_message_hash(room_id, sender, message, timestamp)
@@ -55,25 +49,25 @@ class RoomMessageManager:
         }
         
         try:
-            return self._save_message_distributed(room_id, message_obj)
+            return self._save_message(room_id, message_obj)
         except Exception as e:
             return False, "", f"Erro ao salvar mensagem: {e}"
 
-    def _save_message_distributed(self, room_id, message_obj):
-        """Salva mensagem no modo distribuído (todos os membros)"""
+    def _save_message(self, room_id, message_obj):
+        """Adiciona a mensagem no histórico local da sala, se não for repetida."""
         with self.sync_lock:
             messages = self._load_messages_from_file(room_id)
             
-            # Verificar duplicata
+            # Se já tem essa mensagem, não salva de novo
             if any(msg.get('hash') == message_obj['hash'] for msg in messages):
                 return True, message_obj['hash'], ""
             
             messages.append(message_obj)
             
-            # Ordenar por timestamp
+            # Deixa as mensagens em ordem de tempo
             messages.sort(key=lambda x: x.get('timestamp', ''))
             
-            # Atualizar cache
+            # Atualiza o cache na memória
             self.message_cache[room_id] = {
                 "messages": messages.copy(),
                 "last_sync": time.time()
@@ -85,12 +79,12 @@ class RoomMessageManager:
         return True, message_obj['hash'], ""
     
     def get_messages(self, room_id, limit = 50):
-        """Obtém mensagens da sala"""
+        """Pega as últimas mensagens da sala. Por padrão mostra até 50."""
         with self.sync_lock:
-            # Verificar cache primeiro
+            # Primeiro tenta pegar do cache (mais rápido)
             if room_id in self.message_cache:
                 cached = self.message_cache[room_id]
-                # Cache válido por 30 segundos
+                # Se o cache é recente, usa ele
                 if time.time() - cached["last_sync"] < 30:
                     messages = cached["messages"]
                     return messages[-limit:] if limit > 0 else messages
@@ -138,12 +132,11 @@ class RoomMessageManager:
             print(f"Erro ao salvar mensagens: {e}")
     
     def sync_with_peers(self, room_id, member_list):
-        """Sincroniza mensagens com outros peers (modo distribuído) com controle de concorrência"""
-        # Evitar sincronização simultânea da mesma sala
+        """Tenta buscar mensagens novas dos outros membros da sala. Só faz uma sala por vez."""
         sync_key = f"sync_{room_id}"
         if hasattr(self, '_syncing_rooms'):
             if sync_key in self._syncing_rooms:
-                return  # Já está sincronizando esta sala
+                return  # Já tá sincronizando essa sala
         else:
             self._syncing_rooms = set()
         
@@ -205,7 +198,7 @@ class RoomMessageManager:
                     # Peer offline, não tentar conectar
                     return []
                 
-                # Obter endereço do peer
+                # pega endereço do peer
                 request = {'method': 'get_peer_chat_address', 'username': peer_username}
                 response = self.peer.send_request(request)
                 
@@ -213,13 +206,11 @@ class RoomMessageManager:
                     return []
                 
                 ip, port = response['ip'], response['port']
-                
-                # Conectar ao peer com timeout maior
+
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(30)  # Timeout generoso para conexão
+                sock.settimeout(30)
                 sock.connect((ip, port))
                 
-                # Solicitar mensagens
                 sync_request = {
                     "action": "sync_room_messages",
                     "room_id": room_id,
@@ -228,8 +219,8 @@ class RoomMessageManager:
                 
                 sock.sendall(json.dumps(sync_request).encode() + b'\n')
                 
-                # Receber resposta com timeout maior
-                sock.settimeout(20)  # Timeout generoso para recebimento
+
+                sock.settimeout(20) 
                 response_data = sock.recv(16384).decode().strip()  # Buffer maior
                 response = json.loads(response_data)
                 
@@ -238,7 +229,6 @@ class RoomMessageManager:
                 if response.get('status') == 'success':
                     return response.get('messages', [])
                 
-                # Se chegou aqui, tente novamente
                 if attempt < max_retries - 1:
                     time.sleep(1)  # Esperar antes de retry
                     continue
@@ -246,7 +236,7 @@ class RoomMessageManager:
             except (socket.timeout, ConnectionRefusedError, OSError) as e:
                 # Silenciar timeouts comuns para não fazer spam no console
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Aguardar antes de tentar novamente
+                    time.sleep(2)
                     continue
             except Exception as e:
                 # Outros erros - apenas no último retry
@@ -257,7 +247,7 @@ class RoomMessageManager:
         return []
     
     def sync_messages_periodically(self):
-        """Thread para sincronização periódica (modo distribuído) com controle inteligente"""
+        """Thread que fica tentando sincronizar mensagens de vez em quando."""
         sync_interval = 120  # Sincronizar a cada 2 minutos ao invés de 60 segundos
         last_sync_times = {}  # room_id -> timestamp da última sync
         
@@ -327,7 +317,7 @@ class RoomMessageManager:
             room_id = request.get('room_id')
             requester = request.get('requester')
             
-            # Verificar se o solicitante é membro da sala
+            # Ver se quem tá pedindo é realmente da sala
             room_request = {'method': 'get_room_members', 'room_id': room_id}
             response = self.peer.send_request(room_request)
             

@@ -284,7 +284,7 @@ class TrackerDao:
     def delete_chat_room(self, room_id, requester):
         """Remove uma sala de chat (apenas moderador)"""
         try:
-            # Verificar se o usuário é o moderador
+            # Verifica se o usuário é o moderador
             cursor = self.conn.execute(
                 "SELECT moderator FROM chat_rooms WHERE room_id = ?",
                 (room_id,)

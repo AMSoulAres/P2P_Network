@@ -109,7 +109,6 @@ class ChatRoomManager:
 
     def join_room(self, room_id):
         """Ingressa em uma sala (atualiza dados locais)"""
-        # Obter informações da sala
         request = {'method': 'get_room_info', 'room_id': room_id}
         response = self.peer.send_request(request)
         
@@ -168,7 +167,6 @@ class ChatRoomManager:
 
     def send_message(self, room_id, message):
         """Envia mensagem para a sala"""
-        # Obter informações da sala
         request = {'method': 'get_room_info', 'room_id': room_id}
         response = self.peer.send_request(request)
         
@@ -316,9 +314,7 @@ class ChatRoomManager:
         if room_id not in self.active_rooms:
             return
         
-        # Salvar mensagem usando o gerenciador
         if message_hash:
-            # Criar objeto de mensagem completo
             message_obj_full = {
                 "hash": message_hash,
                 "room_id": room_id,
@@ -327,7 +323,6 @@ class ChatRoomManager:
                 "timestamp": timestamp
             }
             
-            # Salvar no sistema de mensagens distribuído
             request = {'method': 'get_room_info', 'room_id': room_id}
             response = self.peer.send_request(request)
             
@@ -343,7 +338,6 @@ class ChatRoomManager:
 
     def load_room_history(self, room_id):
         """Carrega histórico de mensagens da sala"""
-        # Carregar do sistema de mensagens distribuído
         messages = self.message_manager.get_messages(room_id, limit=50)
         
         # Salvar mensagens no log local para compatibilidade
@@ -396,7 +390,6 @@ class ChatRoomManager:
                         self.refresh_room_members(room_id) # Atualizar para quem transmitir
                         
                     except Exception as e:
-                        # Log silencioso para evitar spam
                         pass
             except Exception as e:
                 print(f"Erro na sincronização de salas: {e}")
