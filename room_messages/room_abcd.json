@@ -1,0 +1,21 @@
+{
+  "room_id": "abcd",
+  "last_updated": "2025-07-09T21:50:04.914846",
+  "message_count": 2,
+  "messages": [
+    {
+      "hash": "cee35decb62988929fe2eb3c61a20a670b3330fa8e4f6cb9a6508fdf025f9f32",
+      "room_id": "abcd",
+      "sender": "bob",
+      "message": "alo",
+      "timestamp": "2025-07-09T21:45:37.526196"
+    },
+    {
+      "hash": "42f1da3f45aa6ec683b44654c4000f553c7f807ab82fe53df7a91ff47795bf5c",
+      "room_id": "abcd",
+      "sender": "mafe",
+      "message": "123",
+      "timestamp": "2025-07-09T21:50:04.914700"
+    }
+  ]
+}

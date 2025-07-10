@@ -21,29 +21,24 @@ class ChatRoomManager:
         self.room_lock = threading.Lock()
         self.chat_logs_dir = "chat_logs"
         os.makedirs(self.chat_logs_dir, exist_ok=True)
-        
-        # Sistema de mensagens distribuído
-        # Pode ser "centralized" (moderador) ou "distributed" (todos os membros)
-        storage_mode = "centralized"  # Padrão: centralizado no moderador
-        self.message_manager = RoomMessageManager(peer, storage_mode)
+        self.message_manager = RoomMessageManager(peer)
         
         # Thread para sincronização periódica
         self.sync_thread = threading.Thread(target=self.sync_rooms_periodically, daemon=True)
         self.sync_thread.start()
 
-    def create_room(self, room_id, name, max_history=100):
+    def create_room(self, room_id, max_history=100):
         """Cria uma nova sala de chat"""
         request = {
             'method': 'create_room',
             'room_id': room_id,
-            'name': name,
             'max_history': max_history
         }
         response = self.peer.send_request(request)
         
         if response and response.get('status') == 'success':
             # Criar arquivo de log local
-            self.create_room_log_file(room_id, name)
+            self.create_room_log_file(room_id)
             return True, response.get('message')
         else:
             return False, response.get('message', 'Erro desconhecido')
@@ -138,9 +133,9 @@ class ChatRoomManager:
         self.load_room_history(room_id)
         
         # Criar arquivo de log se não existir
-        self.create_room_log_file(room_id, room_info['name'])
+        self.create_room_log_file(room_id)
         
-        return True, f"Ingressou na sala {room_info['name']}"
+        return True, f"Ingressou na sala {room_info['room_id']}"
 
     def leave_room(self, room_id):
         """Sai de uma sala"""
@@ -181,7 +176,7 @@ class ChatRoomManager:
             return False, "Erro ao obter informações da sala"
         
         room_info = response.get('room_info')
-        
+
         # Salvar mensagem usando o gerenciador de mensagens
         success, message_hash, error = self.message_manager.save_message(
             room_id, self.peer.username, message, room_info
@@ -209,7 +204,7 @@ class ChatRoomManager:
         """Envia mensagem para todos os membros conectados da sala"""
         if room_id not in self.room_members:
             return
-        
+
         with self.room_lock:
             room_connections = self.room_connections.get(room_id, {})
         
@@ -219,18 +214,29 @@ class ChatRoomManager:
                 continue  # Não enviar para si mesmo
             
             try:
-                # Obter endereço do chat do membro
+                # Verificar se há conexão ativa
                 if username not in room_connections:
-                    self.connect_to_member(room_id, username)
+                    # Tentar reconectar
+                    if self.connect_to_member(room_id, username):
+                        room_connections = self.room_connections.get(room_id, {})
                 
                 if username in room_connections:
                     sock = room_connections[username]
                     sock.sendall(json.dumps(message_obj).encode() + b'\n')
+                else:
+                    # Se não conseguiu conectar, tentar broadcast direto
+                    self.send_direct_message(username, message_obj)
+                    
             except Exception as e:
                 print(f"Erro ao enviar mensagem para {username}: {e}")
-                # Remover conexão inválida
+                # Remover conexão inválida e tentar reconectar
                 if username in room_connections:
                     room_connections.pop(username, None)
+                # Tentar broadcast direto como fallback
+                try:
+                    self.send_direct_message(username, message_obj)
+                except:
+                    pass
 
     def connect_to_member(self, room_id, username):
         """Conecta a um membro da sala para chat direto"""
@@ -333,9 +339,7 @@ class ChatRoomManager:
         if not self.message_exists_in_log(room_id, message_hash):
             self.save_message_to_log(room_id, sender, message, message_hash, timestamp)
         
-        # Exibir mensagem
-        room_name = self.active_rooms[room_id]['name']
-        print(f"\n[SALA {room_name}] {sender}: {message}\n{self.peer.prompt}", end='', flush=True)
+        print(f"\n[SALA {room_id}] {sender}: {message}\n{self.peer.prompt}", end='', flush=True)
 
     def load_room_history(self, room_id):
         """Carrega histórico de mensagens da sala"""
@@ -380,28 +384,31 @@ class ChatRoomManager:
                         self.room_connections[room_id].pop(username, None)
 
     def sync_rooms_periodically(self):
-        """Sincroniza salas periodicamente"""
+        """Sincroniza salas periodicamente - otimizada para evitar conflitos"""
         while True:
             try:
-                time.sleep(30)  # Sincronizar a cada 30 segundos
+                time.sleep(180)  # Sincronizar a cada 3 minutos
                 with self.room_lock:
                     active_room_ids = list(self.active_rooms.keys())
                 
                 for room_id in active_room_ids:
-                    self.refresh_room_members(room_id)
-                    # Carregar novas mensagens
-                    self.load_room_history(room_id)
+                    try:
+                        self.refresh_room_members(room_id) # Atualizar para quem transmitir
+                        
+                    except Exception as e:
+                        # Log silencioso para evitar spam
+                        pass
             except Exception as e:
                 print(f"Erro na sincronização de salas: {e}")
 
     # Métodos para gerenciamento de logs locais
     
-    def create_room_log_file(self, room_id, room_name):
+    def create_room_log_file(self, room_id):
         """Cria arquivo de log para a sala"""
         log_file = os.path.join(self.chat_logs_dir, f"room_{room_id}.log")
         if not os.path.exists(log_file):
             with open(log_file, 'w', encoding='utf-8') as f:
-                f.write(f"# Log da sala: {room_name} (ID: {room_id})\n")
+                f.write(f"# Log da sala - (ID: {room_id})\n")
                 f.write(f"# Criado em: {datetime.now().isoformat()}\n\n")
 
     def save_message_to_log(self, room_id, sender, message, message_hash, timestamp=None):
@@ -441,8 +448,16 @@ class ChatRoomManager:
         try:
             with open(log_file, 'r', encoding='utf-8') as f:
                 all_lines = f.readlines()
-                # Filtrar linhas de mensagens (não comentários)
-                message_lines = [line for line in all_lines if line.startswith('[')]
+                # Filtrar linhas de mensagens (não comentários) e remover hash
+                message_lines = []
+                for line in all_lines:
+                    if line.startswith('['):
+                        # Remover a parte do hash: (hash: xxxxx)
+                        if ' (hash: ' in line:
+                            clean_line = line.split(' (hash: ')[0] + '\n'
+                            message_lines.append(clean_line)
+                        else:
+                            message_lines.append(line)
                 return message_lines[-lines:] if lines > 0 else message_lines
         except Exception as e:
             print(f"Erro ao ler log: {e}")
@@ -457,9 +472,8 @@ class ChatRoomManager:
         
         if not messages:
             return True, "Nenhuma mensagem encontrada"
-        
-        room_name = self.active_rooms[room_id]['name']
-        print(f"\n=== HISTÓRICO DA SALA {room_name} (últimas {len(messages)} mensagens) ===")
+
+        print(f"\n=== HISTÓRICO DA SALA {room_id} (últimas {len(messages)} mensagens) ===")
         
         for msg in messages:
             sender = msg.get('sender', 'Desconhecido')
@@ -492,8 +506,29 @@ class ChatRoomManager:
         member_list = [m.get('username') for m in members if m.get('username')]
         
         # Sincronizar mensagens
-        if self.message_manager.storage_type == "distributed":
-            self.message_manager.sync_with_peers(room_id, member_list)
-            return True, "Sincronização iniciada"
-        else:
-            return True, "Sincronização não necessária (modo centralizado)"
+        self.message_manager.sync_with_peers(room_id, member_list)
+        return True, "Sincronização iniciada"
+
+    def send_direct_message(self, username, message_obj):
+        """Envia mensagem direta para um peer (fallback quando não há conexão persistente)"""
+        try:
+            # Obter endereço do peer
+            request = {'method': 'get_peer_chat_address', 'username': username}
+            response = self.peer.send_request(request)
+            
+            if not (response and response.get('status') == 'success'):
+                return False
+            
+            ip, port = response['ip'], response['port']
+            
+            # Conectar e enviar mensagem diretamente
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)  # Timeout menor para envio direto
+            sock.connect((ip, port))
+            
+            sock.sendall(json.dumps(message_obj).encode() + b'\n')
+            sock.close()
+            
+            return True
+        except Exception:
+            return False

@@ -12,6 +12,7 @@ from getpass import getpass
 import threading
 import time
 import traceback
+from chat_room_manager import ChatRoomManager
 
 CHUNK_SIZE = 1024*1024  # 1MB, tamanho do chunk para download
 HEARTBEAT_INTERVAL = 60  # segundos
@@ -50,7 +51,6 @@ class Peer(cmd.Cmd):
         self.chat_target_user = None
 
         # Sistema de salas de chat
-        from chat_room_manager import ChatRoomManager
         self.room_manager = ChatRoomManager(self)
         self.current_room = None
 
@@ -85,8 +85,6 @@ class Peer(cmd.Cmd):
 
             if response and 'score' in response:
                 self.score = response['score']
-
-            print(f"Enviando heartbeat para o tracker com {len(hashes)} arquivos compartilhados")
             time.sleep(HEARTBEAT_INTERVAL) # Vai rodar numa thread separada, então não bloqueia o loop principal
 
     def start_chunk_server(self):
@@ -814,22 +812,21 @@ class Peer(cmd.Cmd):
             return
         
         args = arg.split()
-        if len(args) < 2:
-            print("Uso: create_room <room_id> <nome> [max_history]")
+        if len(args) < 1:
+            print("Uso: create_room <name> [max_history]")
             return
         
         room_id = args[0]
-        name = ' '.join(args[1:-1]) if len(args) > 2 else args[1]
         max_history = 100
         
         try:
-            if len(args) > 2 and args[-1].isdigit():
+            if len(args) > 1 and args[-1].isdigit():
                 max_history = int(args[-1])
-                name = ' '.join(args[1:-1])
+                room_id = ' '.join(args[0:-1])
         except ValueError:
             pass
-        
-        success, message = self.room_manager.create_room(room_id, name, max_history)
+
+        success, message = self.room_manager.create_room(room_id, max_history)
         print(message)
     
     def do_delete_room(self, arg):
@@ -850,10 +847,10 @@ class Peer(cmd.Cmd):
         success, message = self.room_manager.delete_room(room_id)
         print(message)
     
-    def do_add_to_room(self, arg):
+    def do_invite(self, arg):
         """Adiciona um usuário à sala (apenas moderador).
         
-        Uso: add_to_room <room_id> <username>
+        Uso: invite <room_id> <username>
         """
         if not self.logged_in:
             print("Autentique-se primeira")
@@ -861,7 +858,7 @@ class Peer(cmd.Cmd):
         
         args = arg.split()
         if len(args) < 2:
-            print("Uso: add_to_room <room_id> <username>")
+            print("Uso: invite <room_id> <username>")
             return
         
         room_id, username = args[0], args[1]
@@ -903,8 +900,8 @@ class Peer(cmd.Cmd):
         
         print("Salas disponíveis:")
         for room in rooms:
-            status = "MEMBRO" if room['is_member'] else "DISPONÍVEL"
-            print(f"  {room['room_id']} - {room['name']} (Moderador: {room['moderator']}) [{status}]")
+            status = "MEMBRO" if room['is_member'] else ""
+            print(f"  {room['room_id']} (Moderador: {room['moderator']}) [{status}]")
     
     def do_join_room(self, arg):
         """Ingressa em uma sala de chat.
@@ -997,10 +994,10 @@ class Peer(cmd.Cmd):
             return
         
         self.current_room = room_id
-        room_name = self.room_manager.active_rooms[room_id]['name']
-        self.prompt = f'sala({room_name})> '
+        room_id = self.room_manager.active_rooms[room_id]['room_id']
+        self.prompt = f'sala({room_id})> '
         
-        print(f"--- Entrando na sala {room_name}. Digite '/exit' para sair do modo sala. ---")
+        print(f"--- Entrando na sala {room_id}. Digite '/exit' para sair do modo sala. ---")
         
         # Mostrar histórico recente
         history = self.room_manager.get_room_log(room_id, 10)
@@ -1008,52 +1005,6 @@ class Peer(cmd.Cmd):
             print("Histórico recente:")
             for line in history:
                 print(f"  {line.strip()}")
-    
-    def do_room_history(self, arg):
-        """Mostra histórico de mensagens da sala ativa ou especificada
-        
-        Uso: room_history [room_id] [limite]
-        """
-        if not self.logged_in:
-            print("Você precisa estar logado.")
-            return
-        
-        args = arg.split()
-        room_id = args[0] if args else self.current_room
-        limit = int(args[1]) if len(args) > 1 else 20
-        
-        if not room_id:
-            print("Especifique um room_id ou entre em uma sala primeiro.")
-            return
-        
-        try:
-            if len(args) > 1:
-                limit = int(args[1])
-        except ValueError:
-            print("Limite deve ser um número")
-            return
-        
-        success, message = self.room_manager.show_room_history(room_id, limit)
-        if not success:
-            print(f"Erro: {message}")
-        
-    def do_sync_room(self, arg):
-        """Força sincronização de mensagens com outros peers
-        
-        Uso: sync_room [room_id]
-        """
-        if not self.logged_in:
-            print("Você precisa estar logado.")
-            return
-        
-        room_id = arg.strip() if arg.strip() else self.current_room
-        
-        if not room_id:
-            print("Especifique um room_id ou entre em uma sala primeiro.")
-            return
-        
-        success, message = self.room_manager.sync_room_with_peers(room_id)
-        print(message)
     
     # <<<< CHAT >>>>
     def start_chat_server(self):
@@ -1216,8 +1167,8 @@ class Peer(cmd.Cmd):
             stripped_line = line.strip().lower()
             
             if stripped_line == '/exit':
-                room_name = self.room_manager.active_rooms[self.current_room]['name']
-                print(f"--- Saindo do modo de sala {room_name}. Você continua como membro. ---")
+                room_id = self.room_manager.active_rooms[self.current_room]['room_id']
+                print(f"--- Saindo do modo de sala {room_id}. Você continua como membro. ---")
                 self.current_room = None
                 self.prompt = 'peer> '
                 self.lastcmd = ''

@@ -301,14 +301,13 @@ class Tracker:
             return {'status': 'error', 'message': msg}
         
         room_id = request.get('room_id')
-        name = request.get('name')
         max_history = request.get('max_history', 100)
         
-        if not room_id or not name:
-            return {'status': 'error', 'message': 'ID e nome da sala são obrigatórios'}
+        if not room_id:
+            return {'status': 'error', 'message': 'ID da sala é obrigatório'}
         
-        if self.db.create_chat_room(room_id, name, username, max_history):
-            return {'status': 'success', 'message': f'Sala {name} criada com sucesso'}
+        if self.db.create_chat_room(room_id=room_id, moderator=username, max_history=max_history):
+            return {'status': 'success', 'message': f'Sala {room_id} criada com sucesso'}
         else:
             return {'status': 'error', 'message': 'Sala já existe ou erro interno'}
 
@@ -384,10 +383,9 @@ class Tracker:
         for room in rooms:
             room_list.append({
                 'room_id': room[0],
-                'name': room[1],
-                'moderator': room[2],
-                'created_at': room[3],
-                'is_member': bool(room[4])
+                'moderator': room[1],
+                'created_at': room[2],
+                'is_member': bool(room[3])
             })
         
         return {'status': 'success', 'rooms': room_list}
@@ -438,9 +436,13 @@ class Tracker:
         return {
             'status': 'success',
             'room_info': {
-                'name': info[0],
+                'room_id': info[0],
                 'moderator': info[1],
                 'created_at': info[2],
                 'max_history': info[3]
             }
         }
+    
+if __name__ == '__main__':
+    tracker = Tracker('localhost', 5000)
+    tracker.start()

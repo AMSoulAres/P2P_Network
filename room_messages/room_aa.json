@@ -1,0 +1,28 @@
+{
+  "room_id": "aa",
+  "last_updated": "2025-07-09T22:10:30.581349",
+  "message_count": 3,
+  "messages": [
+    {
+      "hash": "cfe712722673ad3d6cdd5c766a51867a869e774c02ff731ecab57270eec0cd76",
+      "room_id": "aa",
+      "sender": "soulares",
+      "message": "aa",
+      "timestamp": "2025-07-09T22:10:25.239668"
+    },
+    {
+      "hash": "fcd81d73dfa5343acbb6c4f273ac2e4de498232a8577fa7fe21b0e1dcd243cea",
+      "room_id": "aa",
+      "sender": "mafe",
+      "message": "aa",
+      "timestamp": "2025-07-09T22:10:27.312166"
+    },
+    {
+      "hash": "862357ace5a34cd3d432081087c651b49a085425a10a863248163d269117511f",
+      "room_id": "aa",
+      "sender": "mafe",
+      "message": "ta bom",
+      "timestamp": "2025-07-09T22:10:30.581205"
+    }
+  ]
+}

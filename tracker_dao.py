@@ -60,7 +60,6 @@ class TrackerDao:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_rooms (
                 room_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
                 moderator TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 max_history INTEGER DEFAULT 100,
@@ -265,12 +264,12 @@ class TrackerDao:
 
     # Métodos para gerenciamento de salas de chat
     
-    def create_chat_room(self, room_id, name, moderator, max_history=100):
+    def create_chat_room(self, room_id, moderator, max_history=100):
         """Cria uma nova sala de chat"""
         try:
             self.conn.execute(
-                "INSERT INTO chat_rooms (room_id, name, moderator, max_history) VALUES (?, ?, ?, ?)",
-                (room_id, name, moderator, max_history)
+                "INSERT INTO chat_rooms (room_id, moderator, max_history) VALUES (?, ?, ?)",
+                (room_id, moderator, max_history)
             )
             # Adiciona o moderador como membro da sala
             self.conn.execute(
@@ -370,7 +369,7 @@ class TrackerDao:
     def list_chat_rooms(self, username):
         """Lista salas disponíveis para o usuário"""
         cursor = self.conn.execute('''
-            SELECT cr.room_id, cr.name, cr.moderator, cr.created_at,
+            SELECT cr.room_id, cr.moderator, cr.created_at,
                    CASE WHEN rm.username IS NOT NULL THEN 1 ELSE 0 END as is_member
             FROM chat_rooms cr
             LEFT JOIN room_members rm ON cr.room_id = rm.room_id AND rm.username = ?
@@ -391,7 +390,7 @@ class TrackerDao:
             return None
         
         cursor = self.conn.execute(
-            "SELECT name, moderator, created_at, max_history FROM chat_rooms WHERE room_id = ?",
+            "SELECT room_id, moderator, created_at, max_history FROM chat_rooms WHERE room_id = ?",
             (room_id,)
         )
         return cursor.fetchone()
